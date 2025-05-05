@@ -1,2 +1,2 @@
 # MaiLuncher
-mmqdq
+麦麦饭启动器
