@@ -2,6 +2,8 @@ import flet as ft
 from typing import Optional, TYPE_CHECKING
 import psutil
 import asyncio
+import os
+from pathlib import Path
 
 # Import components and state
 from .flet_interest_monitor import InterestMonitorDisplay
@@ -34,6 +36,13 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
         print("[控制台视图] 创建新的InterestMonitorDisplay实例")
         interest_monitor = InterestMonitorDisplay()
         app_state.interest_monitor_control = interest_monitor
+        
+        # 设置日志路径，使用bot_base_dir
+        if hasattr(app_state, 'bot_base_dir') and app_state.bot_base_dir:
+            print(f"[控制台视图] 设置兴趣监控日志路径: {app_state.bot_base_dir}")
+            interest_monitor.set_log_path(app_state.bot_base_dir)
+        else:
+            print("[控制台视图] 警告: 无法设置兴趣监控日志路径，app_state.bot_base_dir未定义")
 
     # --- 为控制台输出和兴趣监控创建容器，以便动态调整大小 --- #
     output_container = ft.Container(

@@ -8,6 +8,7 @@ import queue
 import traceback
 import asyncio
 import psutil
+import time
 from typing import Optional, TYPE_CHECKING, Tuple
 
 # Import the color parser and AppState/ManagedProcessState
@@ -195,7 +196,7 @@ def stop_managed_process(process_id: str, page: Optional[ft.Page], app_state: "A
 
     # 发送停止信号
     if not process_state.stop_event.is_set():
-        print(f"[停止管理] 设置停止事件: '{process_id}'", flush=True)
+        print(f"[停止管理] 设置停止事件: '{process_id}' (脚本: {process_state.script_path})", flush=True)
         process_state.stop_event.set()
 
     # 尝试优雅终止进程
@@ -217,6 +218,15 @@ def stop_managed_process(process_id: str, page: Optional[ft.Page], app_state: "A
         app_state.clear_process()  # 清理旧状态保持兼容
         app_state.stop_event.clear()  # 确保主停止事件也被清除
         print(f"[停止管理] 主stop_event已清除")
+        
+        # 清空命令行显示
+        if app_state.output_list_view:
+            print(f"[停止管理] 清空MMC命令行显示")
+            time.sleep(0.5)
+            app_state.output_list_view.controls.clear()
+            app_state.output_list_view.controls.append(ft.Text("--- Bot 进程已停止，命令行已清空 ---", italic=True))
+            if page:
+                page.update()
 
     # TODO: Add UI update logic for other processes if a management view exists
 
@@ -304,210 +314,180 @@ async def output_processor_loop(
     proc_queue = output_queue if output_queue is not None else app_state.output_queue
     proc_stop_event = stop_event if stop_event is not None else app_state.stop_event
     output_lv = target_list_view 
+    
+    # 检查是否为适配器进程
+    is_adapter = process_id.startswith("adapter_")
+    
+    # 消息批量更新参数
+    message_batch = []  # 消息缓冲区
+    batch_update_interval = 0.2  # 批量更新间隔，单位秒
+    last_update_time = time.time()  # 上次更新时间
+    max_batch_size = 20  # 最大批次大小，超过此值将立即更新
 
-    # 设置循环退出标志
-    loop_exited_normally = False
-
-    try:
-        while not proc_stop_event.is_set():
-            lines_to_add = []
-            process_ended_signal_received = False
-
+    while not proc_stop_event.is_set():
+        process_ended_signal_received = False
+        current_time = time.time()
+        time_since_last_update = current_time - last_update_time
+        
+        # 持续从队列获取消息，直到队列为空或达到最大批次大小
+        queue_empty = False
+        while len(message_batch) < max_batch_size and not queue_empty and not proc_stop_event.is_set():
             try:
-                # Process all available lines in the queue currently.
-                while not proc_queue.empty():
-                    # raw_line should be a string from the reader thread.
-                    raw_line = proc_queue.get_nowait()
-                    if raw_line is None:
-                        process_ended_signal_received = True
-                        print(f"[Processor Loop - {process_id}] Process ended signal received from reader.", flush=True)
-                        if process_id == "bot.py":
-                            lines_to_add.append(ft.Text("--- Bot 进程已结束，可重新启动 ---", italic=True))
-                        else:
-                            lines_to_add.append(ft.Text(f"--- Process '{process_id}' Finished --- ", italic=True))
-                        break # Exit inner loop once None is received
+                raw_line = proc_queue.get_nowait()
+                if raw_line is None:
+                    process_ended_signal_received = True
+                    print(f"[Processor Loop - {process_id}] Process ended signal received from reader.", flush=True)
+                    if process_id == "mmc":
+                        message_batch.append(ft.Text("--- Bot 进程已结束，可重新启动 ---", italic=True))
                     else:
-                        # [调试] 处理前的队列内容
-                        # print(f"[调试] 准备处理的队列内容: {repr(raw_line)}", flush=True)
-                        
-                        # Directly parse the string. Assume it's correctly decoded.
-                        try:
-                            spans = parse_log_line_to_spans(raw_line)
-                            text_obj = ft.Text(spans=spans, selectable=True, size=12)
-                            lines_to_add.append(text_obj)
-                            
-                            # [调试] 显示处理后要添加到控制台的内容
-                            # 提取并显示spans中的文本预览
-                            span_text_preview = ""
-                            if spans:
-                                # 尝试从spans中提取文本进行预览
-                                try:
-                                    span_text_preview = "".join([span.text for span in spans if hasattr(span, 'text') and span.text])
-                                    if len(span_text_preview) > 100:
-                                        span_text_preview = span_text_preview[:97] + "..."
-                                except Exception as e:
-                                    span_text_preview = f"(无法提取文本: {e})"
-                            
-                            print(f"[调试] 添加到控制台的文本: {span_text_preview or '(spans模式，无法提取内容)'}", flush=True)
-                            
-                        except Exception as parse_err:
-                            # If parsing fails (e.g., complex ANSI), display raw line
-                            print(f"[Processor Loop - {process_id}] Error parsing line with color codes: {parse_err}. Line: {repr(raw_line)}", flush=True)
-                            
-                            error_text = ft.Text(raw_line, selectable=True, size=12, color=ft.colors.ERROR)
-                            lines_to_add.append(error_text)
-                            
-                            # [调试] 显示错误情况下添加的内容
-                            print(f"[调试] 解析失败，添加原始文本: {raw_line}", flush=True)
-
-            except queue.Empty:
-                pass
-            except Exception as loop_err:
-                print(f"[Processor Loop - {process_id}] Unexpected error in processing loop: {loop_err}", flush=True)
-                traceback.print_exc() 
-
-            # print(f"[Processor Loop - {process_id}] 当前lines_to_add: {lines_to_add}")
-            if lines_to_add:
-                if proc_stop_event.is_set(): # Double-check stop event before UI update
-                    print(f"[Processor Loop - {process_id}] Stop event set before UI update, discarding lines.")
-                    loop_exited_normally = True
+                        message_batch.append(ft.Text(f"--- Process '{process_id}' 已结束 --- ", italic=True))
                     break
-
-                if output_lv:
-                    # [调试] 显示添加到ListView的行数
-                    print(f"[调试] 添加到 ListView 的行数: {len(lines_to_add)}", flush=True)
+                else:
+                    spans = parse_log_line_to_spans(raw_line)
+                    text_obj = ft.Text(spans=spans, selectable=True, size=12)
+                    message_batch.append(text_obj)
                     
-                    # --- UI Update Logic (Simplified slightly for clarity) ---
-                    # Determine if manual viewing mode is active for the main bot console
-                    is_manual_viewing_active = (
-                        process_id == "bot.py" and
-                        hasattr(app_state, "manual_viewing") and app_state.manual_viewing and
-                        not getattr(output_lv, "auto_scroll", True)
-                    )
-
-                    current_first_visible = 0
-                    if is_manual_viewing_active and hasattr(output_lv, "first_visible"):
-                        current_first_visible = output_lv.first_visible or 0
-
-                    # Add new lines
-                    print(f"[调试-第1步] 开始添加{len(lines_to_add)}行内容到ListView控件集合", flush=True)
-                    output_lv.controls.extend(lines_to_add)
+                    span_text_preview = ""
+                    if spans:
+                        # 尝试从spans中提取文本进行预览
+                        try:
+                            span_text_preview = "".join([span.text for span in spans if hasattr(span, 'text') and span.text])
+                            if len(span_text_preview) > 100:
+                                span_text_preview = span_text_preview[:97] + "..."
+                        except Exception as e:
+                            span_text_preview = f"(无法提取文本: {e})"
                     
-                    print(f"[调试-第1步] 完成添加，当前ListView控件总数: {len(output_lv.controls)}", flush=True)
+                    print(f"[调试] 添加到控制台的文本: {span_text_preview or '(spans模式，无法提取内容)'}", flush=True)
+            except queue.Empty:
+                queue_empty = True
+        
+        # 判断是否需要更新UI：
+        # 1. 缓冲区有消息且已经到了更新间隔
+        # 2. 缓冲区有消息且数量达到了最大批次大小
+        # 3. 收到了进程结束信号
+        should_update = (
+            (len(message_batch) > 0 and time_since_last_update >= batch_update_interval) or
+            len(message_batch) >= max_batch_size or
+            process_ended_signal_received
+        )
+        
+        if should_update and message_batch and output_lv and not proc_stop_event.is_set():
+            # --- UI Update Logic ---
+            # 确定是否在手动查看模式
+            is_manual_viewing_active = (
+                process_id == "bot.py" and
+                hasattr(app_state, "manual_viewing") and app_state.manual_viewing and
+                not getattr(output_lv, "auto_scroll", True)
+            )
 
-                    # 限制历史长度
-                    max_lines = 1000 # 可配置的最大行数
-                    removal_count = 0
-                    while len(output_lv.controls) > max_lines:
-                        output_lv.controls.pop(0)
-                        removal_count += 1
+            current_first_visible = 0
+            if is_manual_viewing_active and hasattr(output_lv, "first_visible"):
+                current_first_visible = output_lv.first_visible or 0
 
+            # 批量添加所有消息
+            output_lv.controls.extend(message_batch)
+            
+            # 限制历史长度
+            max_lines = 1000  # 可配置的最大行数
+            removal_count = 0
+            while len(output_lv.controls) > max_lines:
+                output_lv.controls.pop(0)
+                removal_count += 1
 
-                    if is_manual_viewing_active and removal_count > 0:
-                        print(f"[调试-第3步] 手动查看模式 & 有行被移除，当前first_visible={current_first_visible}", flush=True)
-                        adjusted_first_visible = max(0, current_first_visible - removal_count)
-                        # Check if scroll position actually needs setting
-                        # Setting it unnecessarily might cause flicker?
-                        if output_lv.first_visible != adjusted_first_visible:
-                            print(f"[调试-第3步] 调整滚动位置: {current_first_visible} -> {adjusted_first_visible}", flush=True)
-                            output_lv.scroll_to(index=adjusted_first_visible)
+            if is_manual_viewing_active and removal_count > 0:
+                adjusted_first_visible = max(0, current_first_visible - removal_count)
+                if output_lv.first_visible != adjusted_first_visible:
+                    output_lv.scroll_to(index=adjusted_first_visible)
+            
+            # 更新UI（如果可见）
+            if output_lv.visible and page:
+                await update_page_safe(page)
+            
+            # 重置批处理变量
+            message_batch = []
+            last_update_time = time.time()
+        
+        # 处理进程结束信号
+        if process_ended_signal_received:
+            if not proc_stop_event.is_set():
+                proc_stop_event.set()
+                
+            # 更新进程状态
+            proc_state = app_state.managed_processes.get(process_id)
+            if proc_state:
+                proc_state.status = "stopped"
+                proc_state.process_handle = None
+                proc_state.pid = None
+                proc_state.has_run_before = True  # 标记为已运行过
+                
+                # 如果是适配器进程，更新适配器管理界面
+                if is_adapter and page:
+                    page.run_task(lambda: update_ui_after_adapter_stop(page, app_state))
+                
+            # 如果是主机器人进程，更新旧状态和按钮
+            if process_id == "bot.py" or process_id == "mmc":
+                app_state.clear_process()  # Clears old state and marks new as stopped
+                update_buttons_state(page, app_state, is_running=False)
+            break
 
-                    
-                    print(f"[调试-第4步] 开始更新UI界面, ListView可见性: {output_lv.visible}", flush=True)
-                    if output_lv.visible and page:
-                        print(f"[调试-第4步] 调用update_page_safe更新页面", flush=True)
-                        print(f"output_list_view存在: {app_state.output_list_view is not None}")
-                        if app_state.output_list_view:
-                            print(f"  - 控件数: {len(app_state.output_list_view.controls)}")
-                            print(f"  - 可见性: {app_state.output_list_view.visible}")
-                            print(f"  - 已添加到页面: {hasattr(app_state.output_list_view, '_Control__page')}")
-                        print(page)
-                        await update_page_safe(page)
-                        print(f"[调试-第4步] 页面更新完成", flush=True)
-                    else:
-                        print(f"[调试-第4步] 跳过页面更新: ListView不可见或page为None", flush=True)
+        # 检查进程是否意外终止
+        current_proc_state = app_state.managed_processes.get(process_id)
+        current_pid = current_proc_state.pid if current_proc_state else None
 
-            if process_ended_signal_received:
+        # 只有当我们期望进程在运行时才检查PID存在性
+        if current_pid is not None and current_proc_state and current_proc_state.status == "running":
+            if not psutil.pid_exists(current_pid) and not proc_stop_event.is_set():
                 print(
-                    f"[Processor Loop - {process_id}] Process ended naturally. Setting stop event and cleaning up.",
+                    f"[Processor Loop - {process_id}] Process PID {current_pid} ended unexpectedly. Setting stop event.",
                     flush=True,
                 )
-                if not proc_stop_event.is_set():
-                    proc_stop_event.set()
-                # Update the specific process state in the dictionary
-                proc_state = app_state.managed_processes.get(process_id)
-                if proc_state:
-                    proc_state.status = "stopped"
-                    proc_state.process_handle = None
-                    proc_state.pid = None
-                    proc_state.has_run_before = True  # 标记为已运行过
-                # If it's the main bot, also update the old state and buttons
+                proc_stop_event.set()
+                if current_proc_state:  # Update state
+                    current_proc_state.status = "stopped"
+                    current_proc_state.process_handle = None
+                    current_proc_state.pid = None
+                # 添加消息到特定输出视图
+                if output_lv:
+                    output_lv.controls.append(ft.Text(f"--- Process '{process_id}' Ended Unexpectedly ---", italic=True))
+                    if page and output_lv.visible:
+                        try:
+                            await update_page_safe(page)
+                        except Exception:
+                            pass # Ignore update error here
+                # 如果是主机器人进程，更新按钮和旧状态
                 if process_id == "bot.py":
-                    app_state.clear_process()  # Clears old state and marks new as stopped
+                    app_state.clear_process()
                     update_buttons_state(page, app_state, is_running=False)
-                loop_exited_normally = True
-                break
+                break # 检测到意外终止后退出循环
 
-            # Check if the specific process died unexpectedly using its PID from managed_processes
-            current_proc_state = app_state.managed_processes.get(process_id)
-            current_pid = current_proc_state.pid if current_proc_state else None
-
-            # Check PID existence only if we expect it to be running
-            if current_pid is not None and current_proc_state and current_proc_state.status == "running":
-                if not psutil.pid_exists(current_pid) and not proc_stop_event.is_set():
-                    print(
-                        f"[Processor Loop - {process_id}] Process PID {current_pid} ended unexpectedly. Setting stop event.",
-                        flush=True,
-                    )
-                    proc_stop_event.set()
-                    if current_proc_state:  # Update state
-                        current_proc_state.status = "stopped"
-                        current_proc_state.process_handle = None
-                        current_proc_state.pid = None
-                    # Add message to its specific output view
-                    if output_lv:
-                        output_lv.controls.append(ft.Text(f"--- Process '{process_id}' Ended Unexpectedly ---", italic=True))
-                        if page and output_lv.visible:
-                            try:
-                                await update_page_safe(page)
-                            except Exception:
-                                pass # Ignore update error here
-                    # If it's the main bot, update buttons and old state
-                    if process_id == "bot.py":
-                        app_state.clear_process()
-                        update_buttons_state(page, app_state, is_running=False)
-                    loop_exited_normally = True
-                    break
-
-            # Wait before checking the queue again
+        # 如果队列为空且没有消息要处理，等待一小段时间
+        if queue_empty and not message_batch:
             try:
-                print(f"[调试-第5步] 等待新内容，休眠0.2秒", flush=True)
-                await asyncio.sleep(0.2) # Polling interval
-                print(f"[调试-第5步] 休眠结束，准备下一次循环", flush=True)
+                await asyncio.sleep(0.1) # 轮询间隔
             except asyncio.CancelledError:
                 print(f"[Processor Loop - {process_id}] Cancelled during sleep.", flush=True)
                 if not proc_stop_event.is_set():
                     proc_stop_event.set()
-                loop_exited_normally = True
-                break # Exit loop if cancelled
-    finally:
-        # 在方法结束时检查是否正常退出，如果不是，则确保设置停止标志
-        if not loop_exited_normally and not proc_stop_event.is_set():
-            print(f"[Processor Loop - {process_id}] 异常退出循环！强制设置停止标志。", flush=True)
-            proc_stop_event.set()
-            # 更新进程状态
-            current_proc_state = app_state.managed_processes.get(process_id)
-            if current_proc_state:
-                current_proc_state.status = "stopped"
-                current_proc_state.process_handle = None
-                current_proc_state.pid = None
-            # 如果是主机器人进程，也更新旧状态和按钮
-            if process_id == "bot.py":
-                app_state.clear_process()
-                if page:
-                    update_buttons_state(page, app_state, is_running=False)
+                break # 如果被取消则退出循环
 
-    print(f"[Processor Loop - {process_id}] 已退出。", flush=True)
+    # print(f"[Processor Loop - {process_id}] Exited.", flush=True)
+
+
+# --- 添加辅助函数更新适配器界面 ---
+async def update_ui_after_adapter_stop(page: ft.Page, app_state: "AppState"):
+    """当适配器进程停止后，更新适配器界面"""
+    # 导入 create_adapters_view 函数
+    from .ui_views import create_adapters_view
+    
+    # 找到适配器视图并更新
+    for view in page.views:
+        if view.route == "/adapters":
+            # 简单地重新加载视图
+            page.views.remove(view)
+            new_adapters_view = create_adapters_view(page, app_state)
+            page.views.append(new_adapters_view)
+            page.update()
+            break
 
 
 # --- New Generic Start Function ---
@@ -517,6 +497,7 @@ def start_managed_process(
     display_name: str,
     page: ft.Page,
     app_state: "AppState",
+    process_id: str = None,  # 添加可选参数process_id
 ) -> Tuple[bool, Optional[str]]:
     """
     启动一个受管理的后台进程，创建其状态并启动读取器/处理器
@@ -527,7 +508,13 @@ def start_managed_process(
     """
     from .state import ManagedProcessState  # Dynamic import
     
-    process_id = "mmc"
+
+
+    # 根据类型生成进程ID: mmc类型使用固定ID"mmc"，其他类型基于脚本文件名生成
+    if not process_id:
+        process_id = f"process_{os.path.basename(script_path).replace('.py', '').replace('.', '_')}"
+    
+    print(f"[Start Managed] 使用进程ID: {process_id} 运行脚本: {script_path}")
 
     # 防止重复启动已存在的运行中进程
     existing_state = app_state.managed_processes.get(process_id)
@@ -540,8 +527,12 @@ def start_managed_process(
         msg = f"进程 '{display_name}' (ID: {process_id}) 已在运行中"
         print(f"[Start Managed] {msg}", flush=True)
         return False, msg
-
-    full_path = os.path.join(app_state.script_dir, script_path)
+        
+    # 检查脚本文件是否存在
+    full_path = script_path
+    if not os.path.isabs(script_path):
+        full_path = os.path.join(app_state.script_dir, script_path)
+    
     if not os.path.exists(full_path):
         msg = f"错误：未找到脚本文件 {script_path}"
         print(f"[启动管理进程] {msg}", flush=True)
@@ -557,14 +548,22 @@ def start_managed_process(
     else:
         is_main_bot = False
     print(f"[Start Managed] is_main_bot={is_main_bot}")
+    
+    # 如果进程之前存在但已经停止，先清理旧的stop_event
+    if existing_state and existing_state.stop_event and existing_state.stop_event.is_set():
+        print(f"[Start Managed] 清理之前设置的stop_event: {process_id}")
+        existing_state.stop_event.clear()
+    
     new_queue = app_state.output_queue if is_main_bot else queue.Queue()
     new_event = app_state.stop_event if is_main_bot else threading.Event()
 
     # 检查是否之前运行过
     has_run_before = False
-    existing_process = app_state.managed_processes.get(process_id)
-    if existing_process:
-        has_run_before = existing_process.has_run_before
+    if existing_state:
+        has_run_before = existing_state.has_run_before
+        # 如果适配器之前运行过，重用相同的输出视图以保留之前的日志
+        if not is_main_bot and existing_state.output_list_view:
+            print(f"[Start Managed] 重用现有适配器输出视图: {process_id}")
 
     new_process_state = ManagedProcessState(
         process_id=process_id,
@@ -576,22 +575,39 @@ def start_managed_process(
         has_run_before=has_run_before  # 保留之前的运行状态
     )
     
+    # 保留原有输出视图，如果存在的话
+    if existing_state and existing_state.output_list_view:
+        new_process_state.output_list_view = existing_state.output_list_view
+    
     app_state.managed_processes[process_id] = new_process_state
 
 
     output_lv: Optional[ft.ListView] = None
     if is_main_bot:
         output_lv = app_state.output_list_view  # Use the main console view
+        
+        # 如果是mmc进程，清空现有输出视图
+        if output_lv and len(output_lv.controls) > 0:
+            print(f"[Start Managed - {process_id}] 清空MMC输出视图，准备新会话")
+            output_lv.controls.clear()
     else:
-        # Create and store a new ListView for this specific process
-        output_lv = ft.ListView(expand=True, spacing=2, padding=5, auto_scroll=True)  # 始终默认开启自动滚动
-        new_process_state.output_list_view = output_lv
+        # 使用已经存在的ListView或创建新的
+        if new_process_state.output_list_view:
+            output_lv = new_process_state.output_list_view
+            print(f"[Start Managed - {process_id}] 重用已有输出视图，当前行数: {len(output_lv.controls)}")
+            
+            # 添加分隔标记，表示新启动
+            output_lv.controls.append(ft.Text(f"--- 重新启动 {display_name} --- ", italic=True))
+        else:
+            # 创建新的ListView
+            output_lv = ft.ListView(expand=True, spacing=2, padding=5, auto_scroll=True)  # 始终默认开启自动滚动
+            new_process_state.output_list_view = output_lv
+            output_lv.controls.append(ft.Text(f"--- 启动 {display_name} --- ", italic=True))
     
-    # output_lv = app_state.output_list_view
-
     # Add starting message to the determined ListView
     if output_lv:
-        output_lv.controls.append(ft.Text(f"--- Starting {display_name} --- ", italic=True))
+        if len(output_lv.controls) == 0:  # 如果ListView为空，添加启动消息
+            output_lv.controls.append(ft.Text(f"--- 启动 {display_name} --- ", italic=True))
     else:  # Should not happen if is_main_bot or created above
         print(f"[Start Managed - {process_id}] Error: Could not determine target ListView.")
 
@@ -734,6 +750,7 @@ def start_bot_and_show_console(page: ft.Page, app_state: "AppState"):
         display_name="MaiCore",  # Display name for the main bot
         page=page,
         app_state=app_state,
+        process_id="mmc"
     )
 
     if success:

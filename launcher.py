@@ -13,10 +13,40 @@ from src.MaiGoi.ui_views import (
     create_adapters_view,
     create_process_output_view,
 )
-from src.MaiGoi.config_manager import load_config
+from src.MaiGoi.config_manager import load_config, get_config_path, save_config
 from src.MaiGoi.ui_console_view import create_console_view
 from src.MaiGoi.ui_settings_view import create_settings_view
 app_state = AppState()
+
+# --- 添加配置路径调试函数 ---
+def print_config_paths():
+    """打印不同配置的配置路径，用于调试"""
+    # 默认路径
+    default_gui_path = get_config_path(config_type="gui")
+    print(f"[Debug] 默认GUI配置路径: {default_gui_path}")
+    
+    # 如果app_state中已有bot_base_dir，则显示基于它的路径
+    if hasattr(app_state, 'bot_base_dir') and app_state.bot_base_dir:
+        bot_gui_path = get_config_path(config_type="gui", base_dir=app_state.bot_base_dir)
+        print(f"[Debug] Bot目录下GUI配置路径: {bot_gui_path}")
+        
+        # 检查这两个文件是否存在
+        if default_gui_path and default_gui_path.exists():
+            print(f"[Debug] 默认GUI配置文件存在")
+        else:
+            print(f"[Debug] 默认GUI配置文件不存在")
+            
+        if bot_gui_path and bot_gui_path.exists():
+            print(f"[Debug] Bot目录下GUI配置文件存在")
+        else:
+            print(f"[Debug] Bot目录下GUI配置文件不存在")
+    
+    # 调用验证函数
+    from src.MaiGoi.config_manager import verify_config_consistency
+    results = verify_config_consistency()
+    print("[Debug] 配置一致性验证结果:")
+    for name, path, exists in results:
+        print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
 
 # --- atexit 清理注册 --- #
 # 从process_manager模块注册清理函数
@@ -108,30 +138,29 @@ def route_change(route: ft.RouteChangeEvent):
 
     elif target_route.startswith("/adapters/") and len(target_route.split("/")) == 3:
         parts = target_route.split("/")
-        process_id = parts[2]  # Extract the process ID (which is the script path for now)
-        print(f"[Route Change] Detected adapter output route for ID: {process_id}")
+        process_id = parts[2]  # 提取进程ID (现在使用 adapter_filename 格式)
+        print(f"[Route Change] 检测到适配器输出路由: {process_id}")
         adapter_output_view = create_process_output_view(page, app_state, process_id)
         if adapter_output_view:
             page.views.append(adapter_output_view)
         else:
-            # If view creation failed (e.g., process state not found), show error and stay on previous view?
-            # Or redirect back to /adapters? Let's go back to adapters list.
-            print(f"[Route Change] Failed to create output view for {process_id}. Redirecting to /adapters.")
-            # Avoid infinite loop if /adapters also fails
-            if len(page.views) > 1:  # Ensure we don't pop the main view
-                page.views.pop()  # Pop the failed view attempt
-            # Find the adapters view if it exists, otherwise just update
+            # 如果视图创建失败（例如，找不到进程状态），返回适配器列表
+            print(f"[Route Change] 为 {process_id} 创建输出视图失败。重定向到 /adapters。")
+            # 避免无限循环
+            if len(page.views) > 1:  # 确保不弹出主视图
+                page.views.pop()  # 弹出失败的视图尝试
+            # 查找适配器视图（如果存在），否则创建
             adapters_view_index = -1
             for i, view in enumerate(page.views):
                 if view.route == "/adapters":
                     adapters_view_index = i
                     break
-            if adapters_view_index == -1:  # Adapters view wasn't in stack? Add it.
+            if adapters_view_index == -1:  # 适配器视图不在栈中？添加它
                 adapters_view = create_adapters_view(page, app_state)
                 page.views.append(adapters_view)
-            # Go back to the adapters list route to rebuild the view stack correctly
+            # 返回适配器列表路由以正确重建视图栈
             page.go("/adapters")
-            return  # Prevent page.update() below
+            return  # 防止下面的 page.update()
 
     # Update the page to show the correct view(s)
     page.update()
@@ -151,11 +180,6 @@ def view_pop(e: ft.ViewPopEvent):
 
 
 def main(page: ft.Page):
-    # 清理旧日志文件
-    log_path = "logs/interest/interest_history.log"
-    if os.path.exists(log_path):
-        os.remove(log_path)
-
     # 加载初始GUI配置
     initial_gui_config = load_config(config_type="gui")
     app_state.gui_config = initial_gui_config
@@ -177,7 +201,7 @@ def main(page: ft.Page):
     else:
         bot_base_dir = bot_script_abs_path.parent
         print(f"[Main] 成功！已确定 bot base directory: {bot_base_dir}")
-        
+    
     # 额外检查：验证config目录是否存在
     config_dir = bot_base_dir / "config"
     if not config_dir.exists():
@@ -191,6 +215,24 @@ def main(page: ft.Page):
     # Debug: 调试信息
     print(f"[Main] 最终确定的 bot_base_dir: {bot_base_dir}")
     app_state.bot_base_dir = bot_base_dir # Store for potential use elsewhere (e.g., saving config)
+
+    # 确保兴趣监控日志目录存在并清理旧日志文件
+    interest_log_dir = bot_base_dir / "logs" / "interest"
+    try:
+        # 创建必要的目录结构
+        interest_log_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[Main] 确保兴趣监控日志目录存在: {interest_log_dir}")
+        
+        # 清理旧日志文件
+        interest_log_file = interest_log_dir / "interest_history.log"
+        if interest_log_file.exists():
+            interest_log_file.unlink()
+            print(f"[Main] 已删除旧的兴趣日志文件: {interest_log_file}")
+    except Exception as e:
+        print(f"[Main] 处理兴趣日志目录时出错: {e}")
+
+    # 调用配置路径调试函数
+    print_config_paths()
 
     # --- Reload GUI config relative to bot directory --- #
     # Now that we have the bot_base_dir, reload the GUI config from the correct location
@@ -210,6 +252,9 @@ def main(page: ft.Page):
     # --- Load other settings from the correctly loaded GUI config --- #
     app_state.adapter_paths = loaded_config.get("adapters", []).copy()
     
+    # 打印当前加载的适配器路径
+    print(f"[Main] 当前加载的适配器路径: {app_state.adapter_paths}")
+    
     # 重要：不要覆盖已经确定的bot_script_path
     # 只有在bot_script_path为空或无效时才使用配置中的值
     if not app_state.bot_script_path:
@@ -225,6 +270,22 @@ def main(page: ft.Page):
         app_state.python_path = "" # Ensure it's empty if not valid
 
     print(f"[Main] Final adapters loaded: {app_state.adapter_paths}")
+    
+    # 确保配置文件与当前内存中的状态保持同步 - 重新保存一次
+    try:
+        # 保存当前状态回配置文件，确保一致性
+        print(f"[Main] 重新保存配置以确保一致性，路径: {app_state.bot_base_dir}")
+        save_success = save_config(app_state.gui_config, base_dir=app_state.bot_base_dir)
+        print(f"[Main] 重新保存配置结果: {'成功' if save_success else '失败'}")
+        
+        # 再次验证配置一致性
+        from src.MaiGoi.config_manager import verify_config_consistency
+        results = verify_config_consistency()
+        print("[Main] 保存后配置一致性验证结果:")
+        for name, path, exists in results:
+            print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
+    except Exception as e:
+        print(f"[Main] 重新保存配置时发生错误: {e}")
 
     # Set script_dir in AppState early
     app_state.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -256,11 +317,11 @@ def main(page: ft.Page):
     # --- 自定义主题颜色 --- #
     # 创建深色主题，使橙色变得更暗
     dark_theme = ft.Theme(
-        color_scheme_seed=ft.colors.ORANGE,
-        primary_color=ft.colors.ORANGE_700,  # 使用更暗的橙色
+        color_scheme_seed=ft.Colors.ORANGE,
+        primary_color=ft.Colors.ORANGE_700,  # 使用更暗的橙色
         color_scheme=ft.ColorScheme(
-            primary=ft.colors.ORANGE_700,
-            primary_container=ft.colors.ORANGE_800,
+            primary=ft.Colors.ORANGE_700,
+            primary_container=ft.Colors.ORANGE_800,
         )
     )
     

@@ -4,7 +4,8 @@ import toml
 # but stick to `toml` for loading unless specific features are required.
 import tomlkit
 from pathlib import Path
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, List, Tuple
 
 CONFIG_DIR = Path("config")
 # Define default filenames for different config types
@@ -17,9 +18,45 @@ DEFAULT_GUI_CONFIG = {
     "bot_script_path": "bot.py"
 }  # Add default theme
 
+# 全局变量跟踪已使用的配置路径
+LAST_USED_CONFIG_PATHS = {}
+
+
+# 添加新函数，验证配置文件一致性
+def verify_config_consistency() -> List[Tuple[str, Path, bool]]:
+    """验证所有配置文件路径是否一致存在，返回问题列表"""
+    results = []
+    
+    # 检查默认路径和app_state.bot_base_dir路径（如果有）
+    try:
+        from src.MaiGoi.state import app_state
+        has_app_state = True
+    except (ImportError, AttributeError):
+        has_app_state = False
+    
+    # 检查默认路径
+    default_path = Path(__file__).parent.parent.parent / CONFIG_DIR
+    default_exists = default_path.exists()
+    results.append(("默认配置目录", default_path, default_exists))
+    
+    # 检查bot_base_dir
+    if has_app_state and hasattr(app_state, 'bot_base_dir') and app_state.bot_base_dir:
+        bot_config_path = Path(app_state.bot_base_dir) / CONFIG_DIR
+        bot_path_exists = bot_config_path.exists()
+        results.append(("Bot配置目录", bot_config_path, bot_path_exists))
+    
+    # 检查最后使用的配置路径
+    for config_type, path in LAST_USED_CONFIG_PATHS.items():
+        path_exists = Path(path).exists() if path else False
+        results.append((f"最后使用的{config_type}配置", Path(path) if path else None, path_exists))
+    
+    return results
+
 
 def get_config_path(config_type: str = "gui", base_dir: Optional[Path] = None) -> Optional[Path]:
     """Gets the full path to the specified config file type relative to a base directory."""
+    global LAST_USED_CONFIG_PATHS
+    
     filename = CONFIG_FILES.get(config_type)
     if not filename:
         print(f"[Config] Error: Unknown config type '{config_type}'")
@@ -57,7 +94,16 @@ def get_config_path(config_type: str = "gui", base_dir: Optional[Path] = None) -
     try:
         # 构建完整的配置文件路径
         config_path = base_dir / CONFIG_DIR / filename
-        print(f"[Config] 计算出的配置路径: {config_path}")
+        print(f"[Config] 计算出的配置路径: {config_path} (目录存在: {config_path.parent.exists()})")
+        
+        # 记录使用的配置路径
+        LAST_USED_CONFIG_PATHS[config_type] = str(config_path)
+        
+        # 确保配置目录存在
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not config_path.parent.exists():
+            print(f"[Config] 警告：配置目录 {config_path.parent} 创建失败或不存在")
+        
         return config_path
     except Exception as e:
         print(f"[Config] 构建配置路径时出错: {e}")
@@ -127,6 +173,10 @@ def save_config(config_data: Dict[str, Any], config_type: str = "gui", base_dir:
         return False # Cannot save if path is invalid
 
     print(f"[Config] Saving {config_type} config to: {config_path}")
+    
+    # 打印要保存的适配器列表（如果存在）
+    if config_type == "gui" and "adapters" in config_data:
+        print(f"[Config] 即将保存的适配器列表: {config_data['adapters']}")
 
     # Ensure default keys exist before saving (important for GUI config)
     if config_type == "gui":
@@ -137,12 +187,22 @@ def save_config(config_data: Dict[str, Any], config_type: str = "gui", base_dir:
                 config_data[key] = default_value
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
+        # 确保路径存在
+        if not config_path.parent.exists():
+            print(f"[Config] 警告：配置目录 {config_path.parent} 不存在，尝试创建...")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            
         with open(config_path, "w", encoding="utf-8") as f:
             # Use tomlkit.dump if preserving format/comments is important
             # Otherwise, stick to toml.dump for simplicity
             tomlkit.dump(config_data, f)  # Using tomlkit here
-        print(f"[Config] {config_type} config saved successfully.")
+        
+        # 验证文件是否成功写入
+        if not config_path.exists():
+            print(f"[Config] 警告：配置文件 {config_path} 似乎未成功写入")
+            return False
+            
+        print(f"[Config] {config_type} config saved successfully to {config_path}")
         return True
     except IOError as e:
         print(f"[Config] Error writing {config_type} config file (IOError): {e}")

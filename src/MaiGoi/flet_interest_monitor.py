@@ -8,10 +8,7 @@ import random
 import httpx
 from datetime import datetime
 
-# --- 配置 (可以从 launcher.py 传入或在此处定义) ---
-LOG_FILE_PATH = os.path.join("logs", "interest", "interest_history.log")
-# 移除临时文件路径注释，保留作为备用
-GUI_COMMAND_PATH = "temp_command/gui_command.json"  # 旧方式，保留作为备用
+
 API_HOST = "localhost"  # API主机名
 API_PORT = 8000  # API端口，默认值
 API_BASE_URL = f"http://{API_HOST}:{API_PORT}/api/v1"  # API基础URL
@@ -68,31 +65,7 @@ def get_random_flet_color():
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-# --- 新增: 发送GUI命令到文件 ---
-def send_gui_command(subflow_id, target_state):
-    """发送GUI命令到文件，用于改变子心流状态"""
-    try:
-        # 确保目录存在
-        command_dir = os.path.dirname(GUI_COMMAND_PATH)
-        if command_dir:  # 如果有目录部分
-            os.makedirs(command_dir, exist_ok=True)
 
-        # 创建命令数据
-        command_data = {
-            "subflow_id": subflow_id,
-            "target_state": target_state,  # 不再转为大写，保留原始状态值
-        }
-
-        # 写入文件
-        with open(GUI_COMMAND_PATH, "w", encoding="utf-8") as f:
-            json.dump(command_data, f, ensure_ascii=False, indent=2)
-
-        print(f"[InterestMonitor] 已发送命令: 将子流 {subflow_id} 设置为 {target_state}")
-        return True
-    except Exception as e:
-        print(f"[InterestMonitor] 发送GUI命令出错: {e}")
-        traceback.print_exc()
-        return False
 
 
 class InterestMonitorDisplay(ft.Column):
@@ -103,6 +76,9 @@ class InterestMonitorDisplay(ft.Column):
             expand=True,
         )
         # --- 状态变量 ---
+        self.LOG_FILE_PATH = ""
+        
+        
         self.log_reader_task = None
         self.stream_history = {}  # {stream_id: deque([(ts, interest), ...])}
         self.probability_history = {}  # {stream_id: deque([(ts, probability), ...])}
@@ -280,6 +256,9 @@ class InterestMonitorDisplay(ft.Column):
         ]
 
         print("[InterestMonitor] 初始化完成")
+        
+    def set_log_path(self, log_path):
+        self.LOG_FILE_PATH = os.path.join(log_path, "logs", "interest", "interest_history.log")
 
     # --- 新增: 状态切换处理函数 ---
     async def change_stream_state(self, e):
@@ -468,12 +447,12 @@ class InterestMonitorDisplay(ft.Column):
 
     async def load_and_process_log(self):
         """读取并处理日志文件的新增内容。"""
-        if not os.path.exists(LOG_FILE_PATH):
+        if not os.path.exists(self.LOG_FILE_PATH):
             self.update_status("日志文件未找到", ft.colors.ORANGE)
             return
 
         try:
-            file_mod_time = os.path.getmtime(LOG_FILE_PATH)
+            file_mod_time = os.path.getmtime(self.LOG_FILE_PATH)
             if file_mod_time <= self.last_log_read_time:
                 return
 
@@ -491,7 +470,7 @@ class InterestMonitorDisplay(ft.Column):
             read_count = 0
             error_count = 0
 
-            with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+            with open(self.LOG_FILE_PATH, "r", encoding="utf-8") as f:
                 for line in f:
                     read_count += 1
                     try:
@@ -656,7 +635,7 @@ class InterestMonitorDisplay(ft.Column):
 
         # 检查是否有足够的数据生成图表
         if not self.stream_history:
-            print("[InterestMonitor] 警告: 没有流历史数据可用于生成图表")
+            # print("[InterestMonitor] 警告: 没有流历史数据可用于生成图表")
             self.update_status("无图表数据可用", ft.colors.ORANGE)
             # 清空图表
             self.main_chart.data_series = []
@@ -965,168 +944,3 @@ class InterestMonitorDisplay(ft.Column):
             print(f"[InterestMonitor] 获取时间范围时出错: {e}")
             traceback.print_exc()
             return now - 3600, now + 60
-
-    def send_gui_command_file(self, subflow_id, target_state):
-        """使用文件方式发送命令（备用方法）"""
-        try:
-            # 确保目录存在
-            command_dir = os.path.dirname(GUI_COMMAND_PATH)
-            if command_dir:  # 如果有目录部分
-                os.makedirs(command_dir, exist_ok=True)
-
-            # 创建命令数据
-            command_data = {
-                "subflow_id": subflow_id,
-                "target_state": target_state,  # 不转为大写，保留原始状态值
-            }
-
-            # 写入文件
-            with open(GUI_COMMAND_PATH, "w", encoding="utf-8") as f:
-                json.dump(command_data, f, ensure_ascii=False, indent=2)
-
-            print(f"[InterestMonitor] 已通过文件方式发送命令: 将子流 {subflow_id} 设置为 {target_state}")
-            if self.page:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"通过文件方式发送命令: 将子流 {subflow_id} 设置为 {target_state}"),
-                    show_close_icon=True,
-                    bgcolor=ft.colors.ORANGE_200,  # 使用不同颜色表示使用了备用方式
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
-            return True
-        except Exception as e:
-            print(f"[InterestMonitor] 发送GUI命令文件出错: {e}")
-            traceback.print_exc()
-            return False
-
-
-# --- 测试部分保持不变 ---
-if __name__ == "__main__":
-    # ... (创建测试日志文件代码不变) ...
-    if not os.path.exists("logs/interest"):
-        os.makedirs("logs/interest")
-    test_log_path = LOG_FILE_PATH
-    with open(test_log_path, "w", encoding="utf-8") as f:
-        # ... (写入测试数据不变) ...
-        ts = time.time()
-        f.write(
-            json.dumps(
-                {
-                    "timestamp": ts - 60,
-                    "mai_state": "Idle",
-                    "main_mind": "Start",
-                    "subflow_count": 2,
-                    "subflows": [
-                        {
-                            "stream_id": "user1",
-                            "group_name": "用户A",
-                            "interest_level": 5,
-                            "start_hfc_probability": 0.1,
-                            "sub_mind": "Thinking about A",
-                            "sub_chat_state": "Active",
-                            "is_above_threshold": False,
-                            "chat_state_changed_time": ts - 65,
-                        },
-                        {
-                            "stream_id": "user2",
-                            "group_name": "用户B",
-                            "interest_level": 3,
-                            "start_hfc_probability": 0.05,
-                            "sub_mind": "Thinking about B",
-                            "sub_chat_state": "Idle",
-                            "is_above_threshold": False,
-                            "chat_state_changed_time": ts - 70,
-                        },
-                    ],
-                }
-            )
-            + "\n"
-        )
-        f.write(
-            json.dumps(
-                {
-                    "timestamp": ts - 30,
-                    "mai_state": "Processing",
-                    "main_mind": "Thinking",
-                    "subflow_count": 2,
-                    "subflows": [
-                        {
-                            "stream_id": "user1",
-                            "group_name": "用户A",
-                            "interest_level": 6,
-                            "start_hfc_probability": 0.2,
-                            "sub_mind": "Processing A's request",
-                            "sub_chat_state": "Active",
-                            "is_above_threshold": True,
-                            "chat_state_changed_time": ts - 65,
-                        },
-                        {
-                            "stream_id": "user2",
-                            "group_name": "用户B",
-                            "interest_level": 4,
-                            "start_hfc_probability": 0.1,
-                            "sub_mind": "Waiting for B",
-                            "sub_chat_state": "Idle",
-                            "is_above_threshold": False,
-                            "chat_state_changed_time": ts - 70,
-                        },
-                    ],
-                }
-            )
-            + "\n"
-        )
-        f.write(
-            json.dumps(
-                {
-                    "timestamp": ts,
-                    "mai_state": "Responding",
-                    "main_mind": "Responding to A",
-                    "subflow_count": 2,
-                    "subflows": [
-                        {
-                            "stream_id": "user1",
-                            "group_name": "用户A",
-                            "interest_level": 7,
-                            "start_hfc_probability": 0.3,
-                            "sub_mind": "Generating response A",
-                            "sub_chat_state": "Active",
-                            "is_above_threshold": True,
-                            "chat_state_changed_time": ts - 65,
-                        },
-                        {
-                            "stream_id": "user2",
-                            "group_name": "用户B",
-                            "interest_level": 3,
-                            "start_hfc_probability": 0.08,
-                            "sub_mind": "Still waiting B",
-                            "sub_chat_state": "Idle",
-                            "is_above_threshold": False,
-                            "chat_state_changed_time": ts - 70,
-                        },
-                    ],
-                }
-            )
-            + "\n"
-        )
-
-    async def main(page: ft.Page):
-        page.title = "Interest Monitor 测试"
-        page.vertical_alignment = ft.MainAxisAlignment.START
-        # --- 让窗口适应内容 ---
-        page.window_width = 800  # 增加宽度
-        page.window_height = 650  # 增加高度
-        page.padding = 10  # 统一内边距
-
-        monitor = InterestMonitorDisplay()
-        # --- 添加外层容器并设置属性 ---
-        container = ft.Container(
-            content=monitor,
-            expand=True,  # 让容器扩展
-            border=ft.border.all(1, ft.Colors.OUTLINE),
-            border_radius=ft.border_radius.all(5),
-            padding=10,
-            margin=ft.margin.only(top=10),
-        )
-        page.add(container)  # 将容器添加到页面
-
-    ft.app(target=main)

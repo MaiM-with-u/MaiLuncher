@@ -491,7 +491,11 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
         """Refreshes the list view with current adapter paths and status-dependent buttons."""
         adapters_list_view.controls.clear()
         for index, path in enumerate(app_state.adapter_paths):
-            process_id = path  # Use path as the unique ID for now
+            # 使用与start_adapter_process相同的进程ID生成逻辑
+            display_name = os.path.basename(path)
+            process_id = f"adapter_{display_name.replace('.', '_')}"
+            
+            # 检查进程状态
             process_state = app_state.managed_processes.get(process_id)
             is_running = False
             if (
@@ -509,7 +513,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
                     ft.IconButton(
                         ft.icons.VISIBILITY_OUTLINED,
                         tooltip="查看输出",
-                        data=process_id,
+                        data=process_id,  # 使用进程ID而非路径
                         on_click=lambda e: page.go(f"/adapters/{e.control.data}"),
                         icon_color=ft.colors.BLUE_GREY,  # Neutral color
                     )
@@ -518,7 +522,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
                     ft.IconButton(
                         ft.icons.STOP_CIRCLE_OUTLINED,
                         tooltip="停止此适配器",
-                        data=process_id,
+                        data=process_id,  # 使用进程ID而非路径
                         # Call stop and then refresh the list view
                         on_click=lambda e: (
                             stop_managed_process(e.control.data, page, app_state),
@@ -533,7 +537,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
                     ft.IconButton(
                         ft.icons.PLAY_ARROW_OUTLINED,
                         tooltip="启动此适配器脚本",
-                        data=path,
+                        data=path,  # 仍然需要传递路径以便正确启动
                         on_click=lambda e: start_adapter_process(e, page, app_state),
                         icon_color=ft.colors.GREEN,
                     )
@@ -567,7 +571,18 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
         if 0 <= index_to_remove < len(app_state.adapter_paths):
             removed_path = app_state.adapter_paths.pop(index_to_remove)
             app_state.gui_config["adapters"] = app_state.adapter_paths
-            if save_config(app_state.gui_config):
+            
+            print(f"[Adapters] 准备移除适配器: {removed_path}")
+            print(f"[Adapters] 移除后的适配器列表: {app_state.adapter_paths}")
+            
+            if save_config(app_state.gui_config, base_dir=app_state.bot_base_dir):
+                # 验证配置一致性
+                from ..config_manager import verify_config_consistency
+                results = verify_config_consistency()
+                print("[Adapters] 移除后配置一致性验证结果:")
+                for name, path, exists in results:
+                    print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
+                
                 update_adapters_list()
                 show_snackbar(page, f"已移除: {removed_path}")
             else:
@@ -587,8 +602,12 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
             return
 
         display_name = os.path.basename(path_to_run)  # Use filename as display name
-        process_id = path_to_run  # Use path as ID
-        print(f"[Adapters View] Requesting start for: {display_name} (ID: {process_id})")
+        
+        # 使用安全的进程ID - 使用文件名作为ID而不是完整路径
+        # 这样可以避免URL中的特殊字符问题
+        process_id = f"adapter_{display_name.replace('.', '_')}"
+        
+        # print(f"[Adapters View] 请求启动: {display_name} (ID: {process_id})")
 
         # Call the generic start function from process_manager
         # It will create the specific ListView in the state
@@ -598,6 +617,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
             display_name=display_name,
             page=page,
             app_state=app_state,
+            process_id=process_id,  # 传递生成的进程ID
         )
 
         if success:
@@ -664,10 +684,28 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
             show_snackbar(page, "此适配器路径已存在")
             return
 
+        # 添加调试信息
+        print(f"[Adapters] 当前适配器列表: {app_state.adapter_paths}")
+        print(f"[Adapters] 准备添加新路径: {new_path}")
+        print(f"[Adapters] bot_base_dir: {app_state.bot_base_dir}")
+
         app_state.adapter_paths.append(new_path)
         app_state.gui_config["adapters"] = app_state.adapter_paths
 
-        save_successful = save_config(app_state.gui_config)
+        # 添加更多调试信息
+        print(f"[Adapters] 添加后适配器列表: {app_state.adapter_paths}")
+        print(f"[Adapters] 准备保存配置，gui_config['adapters']: {app_state.gui_config['adapters']}")
+
+        save_successful = save_config(app_state.gui_config, base_dir=app_state.bot_base_dir)
+
+        print(f"[Adapters] 保存配置结果: {'成功' if save_successful else '失败'}")
+        
+        # 验证配置一致性
+        from ..config_manager import verify_config_consistency
+        results = verify_config_consistency()
+        print("[Adapters] 保存后配置一致性验证结果:")
+        for name, path, exists in results:
+            print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
 
         if save_successful:
             new_adapter_path_field.value = ""  # Clear input field
@@ -734,39 +772,120 @@ def create_process_output_view(page: ft.Page, app_state: "AppState", process_id:
     # Import stop function
     from .process_manager import stop_managed_process
 
+    print(f"[Create Output View] 创建进程输出视图: {process_id}")
     process_state = app_state.managed_processes.get(process_id)
 
+    # 定义自定义返回函数
+    def handle_back_button(_):
+        page.go("/adapters")  # 返回适配器列表页面
+
     if not process_state:
-        print(f"[Create Output View] Error: Process state not found for ID: {process_id}")
-        # Optionally show an error view or navigate back
-        # For now, return None, route_change might handle this
+        print(f"[Create Output View] 错误: 未找到进程状态: ID={process_id}")
+        
+        # 尝试找到适配器路径，通过process_id反向查找
+        adapter_path = None
+        display_name = None
+        if process_id.startswith("adapter_"):
+            base_name = process_id[8:].replace('_', '.') # 移除"adapter_"前缀并恢复文件扩展名
+            for path in app_state.adapter_paths:
+                if os.path.basename(path) == base_name:
+                    adapter_path = path
+                    display_name = base_name
+                    break
+        
+        if adapter_path:
+            print(f"[Create Output View] 找到适配器路径: {adapter_path}，创建临时视图")
+            
+            # 创建一个临时ListView
+            temp_output_lv = ft.ListView(expand=True, spacing=2, padding=5, auto_scroll=True)
+            temp_output_lv.controls.append(
+                ft.Text(
+                    f"--- 适配器 {display_name} 当前未运行或已停止 ---",
+                    italic=True,
+                    color=ft.colors.BLUE_GREY,
+                )
+            )
+            
+            # 创建启动按钮
+            start_button = ft.ElevatedButton(
+                "启动适配器",
+                icon=ft.icons.PLAY_ARROW,
+                on_click=lambda _: start_adapter_from_view(adapter_path, page, app_state),
+                bgcolor=ft.colors.with_opacity(0.6, ft.colors.GREEN_ACCENT_100),
+                color=ft.colors.WHITE,
+            )
+            
+            # 返回临时视图，添加自定义返回处理
+            return ft.View(
+                route=f"/adapters/{process_id}",
+                appbar=ft.AppBar(
+                    title=ft.Text(f"输出: {display_name} (未运行)"),
+                    bgcolor=ft.colors.SURFACE_VARIANT,
+                    leading=ft.IconButton(icon=ft.icons.ARROW_BACK, on_click=handle_back_button),
+                    leading_width=40,
+                    automatically_imply_leading=False,
+                    actions=[
+                        start_button,
+                        ft.Container(width=5),
+                    ],
+                ),
+                controls=[temp_output_lv],
+                padding=0,
+            )
+        
+        # 如果无法找到匹配的适配器路径，返回None
         return None
 
     # Get or create the ListView for this process
     # It should have been created and stored by start_managed_process
     if process_state.output_list_view is None:
-        print(f"[Create Output View] Warning: ListView not found in state for {process_id}. Creating fallback.")
+        print(f"[Create Output View] 警告: {process_id} 没有输出视图，创建新视图")
         # Create a fallback, though this indicates an issue elsewhere
         process_state.output_list_view = ft.ListView(expand=True, spacing=2, padding=5, auto_scroll=True)
+        
+        status_text = "已停止"
+        status_color = ft.colors.BLUE_GREY
+        if process_state.status == "running" and process_state.pid and psutil.pid_exists(process_state.pid):
+            status_text = "正在运行中"
+            status_color = ft.colors.GREEN
+        
         process_state.output_list_view.controls.append(
             ft.Text(
-                "--- Error: Output view created unexpectedly. Process might need restart. ---",
+                f"--- 适配器状态: {status_text} ---",
                 italic=True,
-                color=ft.colors.ERROR,
+                color=status_color,
             )
         )
 
     output_lv = process_state.output_list_view
 
     # --- Stop Button --- #
-    stop_button = ft.ElevatedButton(
-        "停止进程",
-        icon=ft.icons.STOP_CIRCLE_OUTLINED,
-        on_click=lambda _: stop_managed_process(process_id, page, app_state),
-        bgcolor=ft.colors.with_opacity(0.6, ft.colors.RED_ACCENT_100),
-        color=ft.colors.WHITE,
-        tooltip=f"停止 {process_state.display_name}",
-    )
+    is_running = process_state.status == "running" and process_state.pid and psutil.pid_exists(process_state.pid)
+    
+    button_list = []
+    
+    if is_running:
+        # 如果正在运行，添加停止按钮
+        stop_button = ft.ElevatedButton(
+            "停止进程",
+            icon=ft.icons.STOP_CIRCLE_OUTLINED,
+            on_click=lambda _: stop_managed_process(process_id, page, app_state),
+            bgcolor=ft.colors.with_opacity(0.6, ft.colors.RED_ACCENT_100),
+            color=ft.colors.WHITE,
+            tooltip=f"停止 {process_state.display_name}",
+        )
+        button_list.append(stop_button)
+    else:
+        # 如果未运行，添加启动按钮
+        start_button = ft.ElevatedButton(
+            "重新启动",
+            icon=ft.icons.PLAY_ARROW,
+            on_click=lambda _: start_adapter_from_view(process_state.script_path, page, app_state, process_id),
+            bgcolor=ft.colors.with_opacity(0.6, ft.colors.GREEN_ACCENT_100),
+            color=ft.colors.WHITE,
+            tooltip=f"重新启动 {process_state.display_name}",
+        )
+        button_list.append(start_button)
 
     # --- Auto-scroll Toggle (Specific to this view) --- #
     # Create a local state for this view's scroll toggle
@@ -788,20 +907,56 @@ def create_process_output_view(page: ft.Page, app_state: "AppState", process_id:
         on_click=toggle_this_view_auto_scroll,
         tooltip="切换此视图的自动滚动",
     )
+    
+    button_list.append(auto_scroll_button)
+
+    status_text = "已停止"
+    if is_running:
+        status_text = "运行中"
 
     return ft.View(
         route=f"/adapters/{process_id}",  # Dynamic route
         appbar=ft.AppBar(
-            title=ft.Text(f"输出: {process_state.display_name}"),
+            title=ft.Text(f"输出: {process_state.display_name} ({status_text})"),
             bgcolor=ft.colors.SURFACE_VARIANT,
-            actions=[
-                stop_button,
-                auto_scroll_button,
-                ft.Container(width=5),  # Spacer
-            ],
+            leading=ft.IconButton(icon=ft.icons.ARROW_BACK, on_click=handle_back_button),
+            leading_width=40,
+            automatically_imply_leading=False,
+            actions=button_list + [ft.Container(width=5)],  # 添加间隔
         ),
         controls=[
             output_lv  # Display the specific ListView for this process
         ],
         padding=0,
     )
+
+# --- 辅助函数 ---
+def start_adapter_from_view(script_path, page, app_state, existing_process_id=None):
+    """从详情视图中启动适配器"""
+    # 导入依赖函数
+    from .process_manager import start_managed_process
+    from .utils import show_snackbar
+    
+    display_name = os.path.basename(script_path)
+    process_id = existing_process_id
+    if not process_id:
+        process_id = f"adapter_{display_name.replace('.', '_')}"
+    
+    print(f"[启动适配器] 从视图启动: {script_path}, process_id={process_id}")
+    
+    # 调用启动函数
+    success, message = start_managed_process(
+        script_path=script_path,
+        type="adapter",
+        display_name=display_name,
+        page=page,
+        app_state=app_state,
+        process_id=process_id,
+    )
+    
+    if success:
+        show_snackbar(page, f"已启动: {display_name}")
+        # 刷新视图
+        page.go(f"/adapters/{process_id}")
+    else:
+        show_snackbar(page, message, error=True)
