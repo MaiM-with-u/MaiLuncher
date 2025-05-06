@@ -12,7 +12,7 @@ async def update_page_safe(page: Optional[ft.Page]):
     """Safely call page.update() if the page object is valid."""
     if page:
         try:
-            await page.update()
+            page.update()
         except Exception:
             # Reduce noise, perhaps only print if debug is enabled later
             # print(f"Error during safe page update: {e}")

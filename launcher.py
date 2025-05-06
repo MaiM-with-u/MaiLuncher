@@ -1,128 +1,103 @@
 import flet as ft
 import os
 import atexit
-import psutil  # Keep for initial PID checks maybe, though state should handle it
-from pathlib import Path # <-- Import Path
-# import asyncio # <--- 如果不再需要其他异步任务，可以考虑移除
-
-# --- Import refactored modules --- #
+import psutil
+from pathlib import Path
 from src.MaiGoi.state import AppState
 from src.MaiGoi.process_manager import (
-    start_bot_and_show_console,
-    output_processor_loop,  # Needed for restarting on navigate
     cleanup_on_exit,
     handle_disconnect,
 )
 from src.MaiGoi.ui_views import (
     create_main_view,
-    create_console_view,
     create_adapters_view,
     create_process_output_view,
 )
 from src.MaiGoi.config_manager import load_config
-
-# --- Import the new settings view --- #
+from src.MaiGoi.ui_console_view import create_console_view
 from src.MaiGoi.ui_settings_view import create_settings_view
-
-# --- Global AppState instance --- #
-# This holds all the state previously scattered as globals
 app_state = AppState()
 
-# --- File Picker Result Handler Placeholder ---
-# We need a placeholder function or logic to handle the result here if needed
-# For now, the result will be handled within the adapters view itself.
-# def handle_file_picker_result(e: ft.FilePickerResultEvent):
-#     print("File picker result in launcher (should be handled in view):", e.files)
-
-# --- atexit Cleanup Registration --- #
-# Register the cleanup function from the process manager module
-# It needs access to the app_state
+# --- atexit 清理注册 --- #
+# 从process_manager模块注册清理函数
+# 它需要访问app_state
 atexit.register(cleanup_on_exit, app_state)
 print("[Main Script] atexit cleanup handler from process_manager registered.", flush=True)
 
 
-# --- Routing Logic --- #
+
 def route_change(route: ft.RouteChangeEvent):
     """Handles Flet route changes, creating and appending views."""
     page = route.page
     target_route = route.route
 
-    # --- 移除异步显示弹窗的辅助函数 ---
-    # async def show_python_path_dialog():
-    #     ...
-
-    # Clear existing views before adding new ones
+    # 清空页面
     page.views.clear()
 
     # Always add the main view
     main_view = create_main_view(page, app_state)
     page.views.append(main_view)
 
-    # --- Handle Specific Routes --- #
+    # 前往主控室
     if target_route == "/console":
-        # 清理：移除之前添加的 is_python_dialog_opening 标志（如果愿意）
-        # app_state.is_python_dialog_opening = False # 可选清理
-
         console_view = create_console_view(page, app_state)
         page.views.append(console_view)
 
-        # --- 仅设置标志 ---
-        print(f"[Route Change /console] Checking python_path: '{app_state.python_path}'")
-        if not app_state.python_path:
-            print("[Route Change /console] python_path is empty, setting flag.")
-            app_state.needs_python_path_dialog = True
-            # *** 不再在这里打开弹窗 ***
-
         # Check process status and potentially restart processor loop if needed
         is_running = app_state.bot_pid is not None and psutil.pid_exists(app_state.bot_pid)
-        print(
-            f"[Route Change /console] Checking status: PID={app_state.bot_pid}, is_running={is_running}, stop_event={app_state.stop_event.is_set()}",
-            flush=True,
-        )
+        print(f"[路由变更 /console] 检查状态: PID={app_state.bot_pid}, 运行中={is_running}, 停止事件={app_state.stop_event.is_set()}", flush=True)
 
         if is_running:
             print("[Route Change /console] Process is running.", flush=True)
-            # If the processor loop was stopped (e.g., by navigating away or stop button),
-            # but the process is still running, restart the loop.
-            if app_state.stop_event.is_set():
-                print("[Route Change /console] Stop event was set, clearing and restarting processor loop.", flush=True)
-                app_state.stop_event.clear()
-                # Make sure output_list_view is available before starting loop
-                if not app_state.output_list_view:
-                    print("[Route Change /console] Warning: output_list_view is None when restarting loop. Creating.")
-                    app_state.output_list_view = ft.ListView(
-                        expand=True, spacing=2, auto_scroll=app_state.is_auto_scroll_enabled, padding=5
-                    )
-                    console_view.controls[1].controls[0].content = app_state.output_list_view  # Update content in view
+            # if app_state.stop_event.is_set():
+            #     print("[Route Change /console] Stop event was set, clearing and restarting processor loop.", flush=True)
+            #     app_state.stop_event.clear()
 
-                page.run_task(output_processor_loop, page, app_state)
+            #     print(f"启动processor_loop前检查：output_list_view = {app_state.output_list_view}, 控件数 = {len(app_state.output_list_view.controls) if app_state.output_list_view else 0}")
+            #     print(f"output_list_view.visible = {app_state.output_list_view.visible if app_state.output_list_view else 'N/A'}")
+                
+
+            #     page.run_task(
+            #         output_processor_loop, 
+            #         page, 
+            #         app_state,
+            #         "bot.py",                      # 明确指定process_id 
+            #         app_state.output_queue,        # 明确传递队列
+            #         app_state.stop_event,          # 明确传递事件
+            #         app_state.output_list_view     # 明确传递ListView
+            #     )
+            #     print("[Route Change /console] 已启动processor_loop，参数完整传递")
         else:
             print("[Route Change /console] Process is not running.", flush=True)
-            # Ensure console view shows the 'not running' state if needed
-            if app_state.output_list_view:
-                # Check if already has the message? Might add duplicates.
-                # Simple approach: just add it if the list is empty or last msg isn't it.
-                add_not_running_msg = True
-                if app_state.output_list_view.controls:
-                    last_control = app_state.output_list_view.controls[-1]
-                    # Check if it's Text and value is not None before checking content
-                    if (
-                        isinstance(last_control, ft.Text)
-                        and last_control.value is not None
-                        and "Bot 进程未运行" in last_control.value
-                    ):
-                        add_not_running_msg = False
-                if add_not_running_msg:
-                    app_state.output_list_view.controls.append(ft.Text("--- Bot 进程未运行 ---", italic=True))
-            else:
-                # If list view doesn't exist here, create it and add the message
-                print("[Route Change /console] Creating ListView to show 'not running' message.")
+            # 获取bot.py进程状态并确定显示消息
+            bot_process_state = app_state.managed_processes.get("bot.py")
+            has_run_before = bot_process_state.has_run_before if bot_process_state else False
+            not_running_message = "--- Bot 进程已结束，可重新启动 ---" if has_run_before else "--- Bot 进程未运行 ---"
+            
+            # 确保ListView存在
+            if not app_state.output_list_view:
+                print("[Route Change /console] Creating ListView to show status message.")
                 app_state.output_list_view = ft.ListView(
                     expand=True, spacing=2, auto_scroll=app_state.is_auto_scroll_enabled, padding=5
                 )
-                app_state.output_list_view.controls.append(ft.Text("--- Bot 进程未运行 ---", italic=True))
-                # Update the console view container's content
+                app_state.output_list_view.controls.append(ft.Text(not_running_message, italic=True))
                 console_view.controls[1].controls[0].content = app_state.output_list_view
+                return
+            
+            # 检查是否已有状态消息
+            status_message_exists = False
+            if app_state.output_list_view.controls:
+                last_control = app_state.output_list_view.controls[-1]
+                if (isinstance(last_control, ft.Text) and last_control.value and 
+                    ("Bot 进程未运行" in last_control.value or "Bot 进程已结束" in last_control.value)):
+                    # 已有状态消息，如果需要更新则更新
+                    status_message_exists = True
+                    if last_control.value != not_running_message:
+                        last_control.value = not_running_message
+            
+            # 如果没有状态消息，添加一个
+            if not status_message_exists:
+                app_state.output_list_view.controls.append(ft.Text(not_running_message, italic=True))
     elif target_route == "/adapters":
         adapters_view = create_adapters_view(page, app_state)
         page.views.append(adapters_view)
@@ -131,8 +106,6 @@ def route_change(route: ft.RouteChangeEvent):
         settings_view = create_settings_view(page, app_state)
         page.views.append(settings_view)
 
-    # --- Handle Dynamic Adapter Output Route --- #
-    # Check if the route matches the pattern /adapters/<something>
     elif target_route.startswith("/adapters/") and len(target_route.split("/")) == 3:
         parts = target_route.split("/")
         process_id = parts[2]  # Extract the process ID (which is the script path for now)
@@ -177,50 +150,78 @@ def view_pop(e: ft.ViewPopEvent):
     # else: print("Warning: Popped the last view.")
 
 
-# --- Main Application Setup --- #
 def main(page: ft.Page):
-    # Load initial config and store in state
-    if os.path.exists("logs/interest/interest_history.log"):
-        os.remove("logs/interest/interest_history.log")
+    # 清理旧日志文件
+    log_path = "logs/interest/interest_history.log"
+    if os.path.exists(log_path):
+        os.remove(log_path)
 
-    # --- Load initial GUI config --- # 
-    # First, load the GUI config from the default location (relative to launcher)
-    # This initial load is needed to get the bot_script_path
-    # We explicitly load ONLY the GUI config here.
-    initial_gui_config = load_config(config_type="gui") # Load from default location first
-    app_state.gui_config = initial_gui_config # Store initially loaded config
-    app_state.bot_script_path = initial_gui_config.get("bot_script_path", "bot.py") 
+    # 加载初始GUI配置
+    initial_gui_config = load_config(config_type="gui")
+    app_state.gui_config = initial_gui_config
+    app_state.bot_script_path = app_state.gui_config.get("bot_script_path", "bot.py")  # 使用默认值如果配置不存在
+    
+    print(f"[Main] 初始bot脚本路径: {app_state.bot_script_path}")
 
-    # --- Determine the bot directory --- #
-    # Calculate the absolute path of the bot script and its directory
-    # Assume bot_script_path might be relative to the launcher's CWD or absolute
+    # 解析为绝对路径
     bot_script_abs_path = Path(app_state.bot_script_path).resolve()
+    print(f"[Main] 解析后的bot脚本路径: {bot_script_abs_path}")
+
+
+    
     if not bot_script_abs_path.is_file():
-        # Fallback or error handling if bot script doesn't exist at the specified path
-        print(f"[Main] Error: Bot script path '{app_state.bot_script_path}' (resolved to '{bot_script_abs_path}') does not point to a valid file. Config loading might be incorrect.")
-        # Decide how to proceed: Use launcher dir? Raise error? For now, default to launcher's dir
-        bot_base_dir = Path(".").resolve() # Use current working directory as fallback
+        # 即使文件不存在，我们也使用其父目录作为 bot_base_dir
+        print(f"[Main] 警告: Bot 脚本 '{app_state.bot_script_path}' (解析为 '{bot_script_abs_path}') 不存在，但仍使用其父目录")
+        bot_base_dir = bot_script_abs_path.parent
+        print(f"[Main] 已设置 bot_base_dir 为: {bot_base_dir}")
     else:
         bot_base_dir = bot_script_abs_path.parent
-    print(f"[Main] Determined bot base directory: {bot_base_dir}")
+        print(f"[Main] 成功！已确定 bot base directory: {bot_base_dir}")
+        
+    # 额外检查：验证config目录是否存在
+    config_dir = bot_base_dir / "config"
+    if not config_dir.exists():
+        print(f"[Main] 警告：在 {bot_base_dir} 下没有找到 config 目录，尝试创建...")
+        try:
+            config_dir.mkdir(exist_ok=True)
+            print(f"[Main] 已创建config目录: {config_dir}")
+        except Exception as e:
+            print(f"[Main] 创建config目录失败: {e}")
+    
+    # Debug: 调试信息
+    print(f"[Main] 最终确定的 bot_base_dir: {bot_base_dir}")
     app_state.bot_base_dir = bot_base_dir # Store for potential use elsewhere (e.g., saving config)
 
     # --- Reload GUI config relative to bot directory --- #
     # Now that we have the bot_base_dir, reload the GUI config from the correct location
-    print(f"[Main] Reloading GUI config relative to bot directory: {bot_base_dir}")
-    loaded_config = load_config(config_type="gui", base_dir=bot_base_dir)
-    app_state.gui_config = loaded_config # Update state with correctly loaded config
+    if bot_base_dir is not None:
+        print(f"[Main] 从 bot 目录重新加载 GUI 配置: {bot_base_dir}")
+        try:
+            loaded_config = load_config(config_type="gui", base_dir=bot_base_dir)
+            app_state.gui_config = loaded_config # Update state with correctly loaded config
+            print(f"[Main] 成功从 {bot_base_dir} 加载配置")
+        except Exception as e:
+            print(f"[Main] 从 bot 目录加载配置失败: {e}, 将使用初始配置")
+            loaded_config = initial_gui_config
+    else:
+        print("[Main] 警告: bot_base_dir 为 None，无法从 bot 目录加载配置，将使用初始加载的配置")
+        loaded_config = initial_gui_config
 
     # --- Load other settings from the correctly loaded GUI config --- #
     app_state.adapter_paths = loaded_config.get("adapters", []).copy()
-    app_state.bot_script_path = loaded_config.get("bot_script_path", "bot.py") # Reload, just in case it changed? Unlikely but safer.
+    
+    # 重要：不要覆盖已经确定的bot_script_path
+    # 只有在bot_script_path为空或无效时才使用配置中的值
+    if not app_state.bot_script_path:
+        app_state.bot_script_path = loaded_config.get("bot_script_path", "bot.py") 
+        print(f"[Main] 从配置加载 bot_script_path: {app_state.bot_script_path}")
 
     # 加载用户自定义的 Python 路径 (from correctly loaded config)
     if "python_path" in loaded_config and loaded_config["python_path"] and Path(loaded_config["python_path"]).exists():
         app_state.python_path = str(Path(loaded_config["python_path"]).resolve()) # Store absolute path
         print(f"[Main] 从相对于 Bot 的配置加载 Python 路径: {app_state.python_path}")
     else:
-        print(f"[Main] Python path not found or invalid in config at {bot_base_dir / 'config' / 'gui_config.toml'}. Will prompt if needed.")
+        print(f"[Main] Python path not found or invalid in config. Will prompt if needed.")
         app_state.python_path = "" # Ensure it's empty if not valid
 
     print(f"[Main] Final adapters loaded: {app_state.adapter_paths}")
@@ -280,17 +281,6 @@ def main(page: ft.Page):
 
     page.padding = 0  # <-- 将页面 padding 设置为 0
 
-    # --- Create the main 'Start Bot' button and store in state --- #
-    # This button needs to exist before the first route_change call
-    app_state.start_bot_button = ft.FilledButton(
-        "启动 MaiBot 主程序 (bot.py)",
-        icon=ft.icons.SMART_TOY_OUTLINED,
-        # The click handler now calls the function from process_manager
-        on_click=lambda _: start_bot_and_show_console(page, app_state),
-        expand=True,
-        tooltip="启动主程序并在新视图中显示控制台输出",
-    )
-    print("[Main] Start Bot Button created and stored in state.", flush=True)
 
     # --- Routing Setup --- #
     page.on_route_change = route_change
@@ -304,9 +294,6 @@ def main(page: ft.Page):
     # Prevent immediate close to allow cleanup
     page.window_prevent_close = True
 
-    # --- Hide Native Title Bar --- #
-    # page.window_title_bar_hidden = True
-    # page.window.frameless = True
 
     # --- Initial Navigation --- #
     # Trigger the initial route change to build the first view
@@ -321,20 +308,4 @@ if __name__ == "__main__":
     # but *before* the atexit handler runs.
     print("[Main Script] Flet app exited. atexit handler should run next.", flush=True)
 
-# --- Removed Code Sections (Previously Globals and Functions) ---
-# (Keep this comment block or similar for reference if desired)
-# Removed: bot_process, bot_pid, output_queue, stop_event, interest_monitor_control,
-#          output_list_view, start_bot_button (now in AppState),
-#          is_auto_scroll_enabled (now in AppState)
-# Removed: ansi_converter
-# Removed: cleanup_on_exit (moved to process_manager)
-# Removed: update_page_safe (moved to utils)
-# Removed: show_snackbar (moved to utils)
-# Removed: run_script (moved to utils)
-# Removed: handle_disconnect (moved to process_manager)
-# Removed: stop_bot_process (moved to process_manager)
-# Removed: read_process_output (moved to process_manager)
-# Removed: output_processor_loop (moved to process_manager)
-# Removed: start_bot_and_show_console (moved to process_manager)
-# Removed: create_console_view (moved to ui_views)
-# (Main view creation logic also moved to ui_views within create_main_view)
+

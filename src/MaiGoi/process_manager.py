@@ -69,8 +69,8 @@ def update_buttons_state(page: Optional[ft.Page], app_state: "AppState", is_runn
             print("[Update Buttons] Warning: console_action_button content is not Text?")
 
     if needs_update and page:
-        print(f"[Update Buttons] State changed, triggering page update. is_running={is_running}")
-        # from .utils import update_page_safe # Moved import to top
+        print(f"[Update Buttons] 状态改变，触发页面更新。is_running={is_running}")
+        print(f"[Update Buttons] 页面更新{page}")
         page.run_task(update_page_safe, page)
 
 
@@ -178,44 +178,45 @@ def handle_disconnect(page: Optional[ft.Page], app_state: "AppState", e):
     print("[Disconnect Event] Main stop_event set. atexit handler will perform final cleanup.", flush=True)
 
 
-# --- New Generic Stop Function ---
+# --- 通用停止函数 ---
 def stop_managed_process(process_id: str, page: Optional[ft.Page], app_state: "AppState"):
-    """Stops a specific managed process by its ID."""
-    print(f"[Stop Managed] Request to stop process ID: '{process_id}'", flush=True)
+    """停止指定ID的管理进程"""
+    print(f"[停止管理] 请求停止进程: '{process_id}'", flush=True)
     process_state = app_state.managed_processes.get(process_id)
 
+    # 检查进程状态是否存在
     if not process_state:
-        print(f"[Stop Managed] Process ID '{process_id}' not found in managed processes.", flush=True)
-        if page and process_id == "bot.py":  # Show snackbar only for the main bot?
-            # from .utils import show_snackbar; show_snackbar(page, "Bot process not found or already stopped.") # Already imported at top
-            show_snackbar(page, "Bot process not found or already stopped.")
-        # If it's the main bot, ensure button state is correct
-        if process_id == "bot.py":
+        print(f"[停止管理] 未找到进程 '{process_id}'", flush=True)
+        if page and process_id == "mmc":
+            show_snackbar(page, "机器人进程未运行")
+        if process_id == "mmc":
             update_buttons_state(page, app_state, is_running=False)
         return
 
-    # Signal the specific stop event for this process
+    # 发送停止信号
     if not process_state.stop_event.is_set():
-        print(f"[Stop Managed] Setting stop_event for ID: '{process_id}'", flush=True)
+        print(f"[停止管理] 设置停止事件: '{process_id}'", flush=True)
         process_state.stop_event.set()
 
-    # Attempt termination
+    # 尝试优雅终止进程
     _terminate_process_gracefully(process_id, process_state.process_handle, process_state.pid)
 
-    # Update state in AppState dictionary
+    # 更新应用状态
     process_state.status = "stopped"
-    process_state.process_handle = None  # Clear handle
-    process_state.pid = None  # Clear PID
-    # Optionally remove the entry from the dictionary entirely?
-    # del app_state.managed_processes[process_id]
-    print(f"[Stop Managed] Marked process ID '{process_id}' as stopped in AppState.")
+    process_state.process_handle = None
+    process_state.pid = None
+    print(f"[停止管理] 进程 '{process_id}' 已标记为停止")
+    
+    # 重要：清除stop_event，以便下次启动
+    process_state.stop_event.clear()
+    print(f"[停止管理] 进程 '{process_id}' 的stop_event已清除")
 
-    # Update UI (specifically for the main bot for now)
-    if process_id == "bot.py":
-        # If the process being stopped is the main bot, update the console button
+    # 如果是主机器人进程则更新UI
+    if process_id == "mmc":
         update_buttons_state(page, app_state, is_running=False)
-        # Also clear the old singleton state for compatibility
-        app_state.clear_process()  # This now also updates the dict entry
+        app_state.clear_process()  # 清理旧状态保持兼容
+        app_state.stop_event.clear()  # 确保主停止事件也被清除
+        print(f"[停止管理] 主stop_event已清除")
 
     # TODO: Add UI update logic for other processes if a management view exists
 
@@ -223,7 +224,7 @@ def stop_managed_process(process_id: str, page: Optional[ft.Page], app_state: "A
 # --- Adapted Old Stop Function (Calls the new generic one) ---
 def stop_bot_process(page: Optional[ft.Page], app_state: "AppState"):
     """(Called by Button) Stops the main bot.py process by calling stop_managed_process."""
-    stop_managed_process("bot.py", page, app_state)
+    stop_managed_process("mmc", page, app_state)
 
 
 # --- Parameterized Reader Thread ---
@@ -257,6 +258,9 @@ def read_process_output(
                 print(f"[Reader Thread - {process_id}] Stop event detected, exiting.", flush=True)
                 break
             if line:
+                # [调试] 输出从 bot.py 读取到的原始内容
+                print(f"[调试] 从 {process_id} 读取的原始内容: {repr(line)}", flush=True)
+                
                 # Directly put the stripped string into the queue.
                 proc_queue.put(line.strip())
             else:
@@ -288,201 +292,259 @@ async def output_processor_loop(
     page: Optional[ft.Page],
     app_state: "AppState",  # Pass AppState for PID checks and potentially global state access
     process_id: str = "bot.py",  # ID to identify the process and its state
-    # Defaults use AppState singletons for backward compatibility with bot.py
     output_queue: Optional[queue.Queue] = None,
     stop_event: Optional[threading.Event] = None,
     target_list_view: Optional[ft.ListView] = None,
 ):
     """
-    Processes a specific output queue and updates the UI until stop_event is set.
-    Defaults to using AppState singletons if specific queue/event/view aren't provided.
+    处理特定的输出队列并更新UI，直到stop_event被触发。
+    如果没有提供特定的队列/事件/视图参数，则默认使用AppState中的单例对象。
     """
     print(f"[Processor Loop - {process_id}] Started.", flush=True)
     proc_queue = output_queue if output_queue is not None else app_state.output_queue
     proc_stop_event = stop_event if stop_event is not None else app_state.stop_event
-    output_lv = target_list_view if target_list_view is not None else app_state.output_list_view
+    output_lv = target_list_view 
 
-    # from .utils import update_page_safe # Moved to top
+    # 设置循环退出标志
+    loop_exited_normally = False
 
-    while not proc_stop_event.is_set():
-        lines_to_add = []
-        process_ended_signal_received = False
+    try:
+        while not proc_stop_event.is_set():
+            lines_to_add = []
+            process_ended_signal_received = False
 
-        try:
-            # Process all available lines in the queue currently.
-            while not proc_queue.empty():
-                # raw_line should be a string from the reader thread.
-                raw_line = proc_queue.get_nowait()
-                if raw_line is None:
-                    process_ended_signal_received = True
-                    print(f"[Processor Loop - {process_id}] Process ended signal received from reader.", flush=True)
-                    lines_to_add.append(ft.Text(f"--- Process '{process_id}' Finished --- ", italic=True))
-                    break # Exit inner loop once None is received
-                else:
-                    # Directly parse the string. Assume it's correctly decoded.
-                    try:
-                        spans = parse_log_line_to_spans(raw_line)
-                        lines_to_add.append(ft.Text(spans=spans, selectable=True, size=12))
-                    except Exception as parse_err:
-                        # If parsing fails (e.g., complex ANSI), display raw line
-                        print(f"[Processor Loop - {process_id}] Error parsing line with color codes: {parse_err}. Line: {repr(raw_line)}", flush=True)
-                        lines_to_add.append(ft.Text(raw_line, selectable=True, size=12, color=ft.colors.ERROR))
+            try:
+                # Process all available lines in the queue currently.
+                while not proc_queue.empty():
+                    # raw_line should be a string from the reader thread.
+                    raw_line = proc_queue.get_nowait()
+                    if raw_line is None:
+                        process_ended_signal_received = True
+                        print(f"[Processor Loop - {process_id}] Process ended signal received from reader.", flush=True)
+                        if process_id == "bot.py":
+                            lines_to_add.append(ft.Text("--- Bot 进程已结束，可重新启动 ---", italic=True))
+                        else:
+                            lines_to_add.append(ft.Text(f"--- Process '{process_id}' Finished --- ", italic=True))
+                        break # Exit inner loop once None is received
+                    else:
+                        # [调试] 处理前的队列内容
+                        # print(f"[调试] 准备处理的队列内容: {repr(raw_line)}", flush=True)
+                        
+                        # Directly parse the string. Assume it's correctly decoded.
+                        try:
+                            spans = parse_log_line_to_spans(raw_line)
+                            text_obj = ft.Text(spans=spans, selectable=True, size=12)
+                            lines_to_add.append(text_obj)
+                            
+                            # [调试] 显示处理后要添加到控制台的内容
+                            # 提取并显示spans中的文本预览
+                            span_text_preview = ""
+                            if spans:
+                                # 尝试从spans中提取文本进行预览
+                                try:
+                                    span_text_preview = "".join([span.text for span in spans if hasattr(span, 'text') and span.text])
+                                    if len(span_text_preview) > 100:
+                                        span_text_preview = span_text_preview[:97] + "..."
+                                except Exception as e:
+                                    span_text_preview = f"(无法提取文本: {e})"
+                            
+                            print(f"[调试] 添加到控制台的文本: {span_text_preview or '(spans模式，无法提取内容)'}", flush=True)
+                            
+                        except Exception as parse_err:
+                            # If parsing fails (e.g., complex ANSI), display raw line
+                            print(f"[Processor Loop - {process_id}] Error parsing line with color codes: {parse_err}. Line: {repr(raw_line)}", flush=True)
+                            
+                            error_text = ft.Text(raw_line, selectable=True, size=12, color=ft.colors.ERROR)
+                            lines_to_add.append(error_text)
+                            
+                            # [调试] 显示错误情况下添加的内容
+                            print(f"[调试] 解析失败，添加原始文本: {raw_line}", flush=True)
 
-        except queue.Empty:
-            # Queue is empty, wait for more lines.
-            pass
-        except Exception as loop_err:
-            # Catch unexpected errors in the loop itself
-            print(f"[Processor Loop - {process_id}] Unexpected error in processing loop: {loop_err}", flush=True)
-            traceback.print_exc() # Print stack trace for debugging
-            # Consider adding a generic error message to the UI as well
-            # lines_to_add.append(ft.Text("--- Internal Processing Error ---", color=ft.colors.RED, italic=True))
+            except queue.Empty:
+                pass
+            except Exception as loop_err:
+                print(f"[Processor Loop - {process_id}] Unexpected error in processing loop: {loop_err}", flush=True)
+                traceback.print_exc() 
+
+            # print(f"[Processor Loop - {process_id}] 当前lines_to_add: {lines_to_add}")
+            if lines_to_add:
+                if proc_stop_event.is_set(): # Double-check stop event before UI update
+                    print(f"[Processor Loop - {process_id}] Stop event set before UI update, discarding lines.")
+                    loop_exited_normally = True
+                    break
+
+                if output_lv:
+                    # [调试] 显示添加到ListView的行数
+                    print(f"[调试] 添加到 ListView 的行数: {len(lines_to_add)}", flush=True)
+                    
+                    # --- UI Update Logic (Simplified slightly for clarity) ---
+                    # Determine if manual viewing mode is active for the main bot console
+                    is_manual_viewing_active = (
+                        process_id == "bot.py" and
+                        hasattr(app_state, "manual_viewing") and app_state.manual_viewing and
+                        not getattr(output_lv, "auto_scroll", True)
+                    )
+
+                    current_first_visible = 0
+                    if is_manual_viewing_active and hasattr(output_lv, "first_visible"):
+                        current_first_visible = output_lv.first_visible or 0
+
+                    # Add new lines
+                    print(f"[调试-第1步] 开始添加{len(lines_to_add)}行内容到ListView控件集合", flush=True)
+                    output_lv.controls.extend(lines_to_add)
+                    
+                    print(f"[调试-第1步] 完成添加，当前ListView控件总数: {len(output_lv.controls)}", flush=True)
+
+                    # 限制历史长度
+                    max_lines = 1000 # 可配置的最大行数
+                    removal_count = 0
+                    while len(output_lv.controls) > max_lines:
+                        output_lv.controls.pop(0)
+                        removal_count += 1
 
 
-        if lines_to_add:
-            if proc_stop_event.is_set(): # Double-check stop event before UI update
-                print(f"[Processor Loop - {process_id}] Stop event set before UI update, discarding lines.")
-                break
+                    if is_manual_viewing_active and removal_count > 0:
+                        print(f"[调试-第3步] 手动查看模式 & 有行被移除，当前first_visible={current_first_visible}", flush=True)
+                        adjusted_first_visible = max(0, current_first_visible - removal_count)
+                        # Check if scroll position actually needs setting
+                        # Setting it unnecessarily might cause flicker?
+                        if output_lv.first_visible != adjusted_first_visible:
+                            print(f"[调试-第3步] 调整滚动位置: {current_first_visible} -> {adjusted_first_visible}", flush=True)
+                            output_lv.scroll_to(index=adjusted_first_visible)
 
-            if output_lv:
-                # --- UI Update Logic (Simplified slightly for clarity) ---
-                # Determine if manual viewing mode is active for the main bot console
-                is_manual_viewing_active = (
-                    process_id == "bot.py" and
-                    hasattr(app_state, "manual_viewing") and app_state.manual_viewing and
-                    not getattr(output_lv, "auto_scroll", True)
-                )
-
-                current_first_visible = 0
-                if is_manual_viewing_active and hasattr(output_lv, "first_visible"):
-                    current_first_visible = output_lv.first_visible or 0
-
-                # Add new lines
-                output_lv.controls.extend(lines_to_add)
-
-                # Limit history size
-                removal_count = 0
-                max_lines = 1000 # Configurable?
-                while len(output_lv.controls) > max_lines:
-                    output_lv.controls.pop(0)
-                    removal_count += 1
-
-                # Adjust scroll position if in manual viewing and lines were removed
-                if is_manual_viewing_active and removal_count > 0:
-                    adjusted_first_visible = max(0, current_first_visible - removal_count)
-                    # Check if scroll position actually needs setting
-                    # Setting it unnecessarily might cause flicker?
-                    if output_lv.first_visible != adjusted_first_visible:
-                        output_lv.scroll_to(index=adjusted_first_visible)
-                        # print(f"[Processor Loop - {process_id}] Manual scroll adjusted: {current_first_visible} -> {adjusted_first_visible}")
-                # else: Auto-scroll handles it, or no lines removed.
-
-                # Update the page if the list view is visible
-                if output_lv.visible and page:
-                    try:
+                    
+                    print(f"[调试-第4步] 开始更新UI界面, ListView可见性: {output_lv.visible}", flush=True)
+                    if output_lv.visible and page:
+                        print(f"[调试-第4步] 调用update_page_safe更新页面", flush=True)
+                        print(f"output_list_view存在: {app_state.output_list_view is not None}")
+                        if app_state.output_list_view:
+                            print(f"  - 控件数: {len(app_state.output_list_view.controls)}")
+                            print(f"  - 可见性: {app_state.output_list_view.visible}")
+                            print(f"  - 已添加到页面: {hasattr(app_state.output_list_view, '_Control__page')}")
+                        print(page)
                         await update_page_safe(page)
-                    except Exception as update_err:
-                        # Log error but continue if page update fails
-                        print(f"[Processor Loop - {process_id}] Error updating page: {update_err}", flush=True)
-                        # traceback.print_exc() # Optional detailed logging
-            else:
-                 print(f"[Processor Loop - {process_id}] Warning: target_list_view is None, cannot display output.")
+                        print(f"[调试-第4步] 页面更新完成", flush=True)
+                    else:
+                        print(f"[调试-第4步] 跳过页面更新: ListView不可见或page为None", flush=True)
 
-        if process_ended_signal_received:
-            print(
-                f"[Processor Loop - {process_id}] Process ended naturally. Setting stop event and cleaning up.",
-                flush=True,
-            )
-            if not proc_stop_event.is_set():
-                proc_stop_event.set()
-            # Update the specific process state in the dictionary
-            proc_state = app_state.managed_processes.get(process_id)
-            if proc_state:
-                proc_state.status = "stopped"
-                proc_state.process_handle = None
-                proc_state.pid = None
-            # If it's the main bot, also update the old state and buttons
-            if process_id == "bot.py":
-                app_state.clear_process()  # Clears old state and marks new as stopped
-                update_buttons_state(page, app_state, is_running=False)
-            break
-
-        # Check if the specific process died unexpectedly using its PID from managed_processes
-        current_proc_state = app_state.managed_processes.get(process_id)
-        current_pid = current_proc_state.pid if current_proc_state else None
-
-        # Check PID existence only if we expect it to be running
-        if current_pid is not None and current_proc_state and current_proc_state.status == "running":
-             if not psutil.pid_exists(current_pid) and not proc_stop_event.is_set():
+            if process_ended_signal_received:
                 print(
-                    f"[Processor Loop - {process_id}] Process PID {current_pid} ended unexpectedly. Setting stop event.",
+                    f"[Processor Loop - {process_id}] Process ended naturally. Setting stop event and cleaning up.",
                     flush=True,
                 )
-                proc_stop_event.set()
-                if current_proc_state:  # Update state
-                    current_proc_state.status = "stopped"
-                    current_proc_state.process_handle = None
-                    current_proc_state.pid = None
-                # Add message to its specific output view
-                if output_lv:
-                    output_lv.controls.append(ft.Text(f"--- Process '{process_id}' Ended Unexpectedly ---", italic=True))
-                    if page and output_lv.visible:
-                        try:
-                            await update_page_safe(page)
-                        except Exception:
-                            pass # Ignore update error here
-                # If it's the main bot, update buttons and old state
+                if not proc_stop_event.is_set():
+                    proc_stop_event.set()
+                # Update the specific process state in the dictionary
+                proc_state = app_state.managed_processes.get(process_id)
+                if proc_state:
+                    proc_state.status = "stopped"
+                    proc_state.process_handle = None
+                    proc_state.pid = None
+                    proc_state.has_run_before = True  # 标记为已运行过
+                # If it's the main bot, also update the old state and buttons
                 if process_id == "bot.py":
-                    app_state.clear_process()
+                    app_state.clear_process()  # Clears old state and marks new as stopped
                     update_buttons_state(page, app_state, is_running=False)
-                break # Exit loop after detecting unexpected termination
+                loop_exited_normally = True
+                break
 
-        # Wait before checking the queue again
-        try:
-            await asyncio.sleep(0.2) # Polling interval
-        except asyncio.CancelledError:
-            print(f"[Processor Loop - {process_id}] Cancelled during sleep.", flush=True)
-            if not proc_stop_event.is_set():
-                proc_stop_event.set()
-            break # Exit loop if cancelled
+            # Check if the specific process died unexpectedly using its PID from managed_processes
+            current_proc_state = app_state.managed_processes.get(process_id)
+            current_pid = current_proc_state.pid if current_proc_state else None
 
-    print(f"[Processor Loop - {process_id}] Exited.", flush=True)
+            # Check PID existence only if we expect it to be running
+            if current_pid is not None and current_proc_state and current_proc_state.status == "running":
+                if not psutil.pid_exists(current_pid) and not proc_stop_event.is_set():
+                    print(
+                        f"[Processor Loop - {process_id}] Process PID {current_pid} ended unexpectedly. Setting stop event.",
+                        flush=True,
+                    )
+                    proc_stop_event.set()
+                    if current_proc_state:  # Update state
+                        current_proc_state.status = "stopped"
+                        current_proc_state.process_handle = None
+                        current_proc_state.pid = None
+                    # Add message to its specific output view
+                    if output_lv:
+                        output_lv.controls.append(ft.Text(f"--- Process '{process_id}' Ended Unexpectedly ---", italic=True))
+                        if page and output_lv.visible:
+                            try:
+                                await update_page_safe(page)
+                            except Exception:
+                                pass # Ignore update error here
+                    # If it's the main bot, update buttons and old state
+                    if process_id == "bot.py":
+                        app_state.clear_process()
+                        update_buttons_state(page, app_state, is_running=False)
+                    loop_exited_normally = True
+                    break
+
+            # Wait before checking the queue again
+            try:
+                print(f"[调试-第5步] 等待新内容，休眠0.2秒", flush=True)
+                await asyncio.sleep(0.2) # Polling interval
+                print(f"[调试-第5步] 休眠结束，准备下一次循环", flush=True)
+            except asyncio.CancelledError:
+                print(f"[Processor Loop - {process_id}] Cancelled during sleep.", flush=True)
+                if not proc_stop_event.is_set():
+                    proc_stop_event.set()
+                loop_exited_normally = True
+                break # Exit loop if cancelled
+    finally:
+        # 在方法结束时检查是否正常退出，如果不是，则确保设置停止标志
+        if not loop_exited_normally and not proc_stop_event.is_set():
+            print(f"[Processor Loop - {process_id}] 异常退出循环！强制设置停止标志。", flush=True)
+            proc_stop_event.set()
+            # 更新进程状态
+            current_proc_state = app_state.managed_processes.get(process_id)
+            if current_proc_state:
+                current_proc_state.status = "stopped"
+                current_proc_state.process_handle = None
+                current_proc_state.pid = None
+            # 如果是主机器人进程，也更新旧状态和按钮
+            if process_id == "bot.py":
+                app_state.clear_process()
+                if page:
+                    update_buttons_state(page, app_state, is_running=False)
+
+    print(f"[Processor Loop - {process_id}] 已退出。", flush=True)
 
 
 # --- New Generic Start Function ---
 def start_managed_process(
     script_path: str,
+    type: str,
     display_name: str,
     page: ft.Page,
     app_state: "AppState",
-    # target_list_view: Optional[ft.ListView] = None # Removed parameter
 ) -> Tuple[bool, Optional[str]]:
     """
+    启动一个受管理的后台进程，创建其状态并启动读取器/处理器
     Starts a managed background process, creates its state, and starts reader/processor.
-    Returns (success: bool, message: Optional[str])
+    
+    返回: (是否成功: 布尔值, 消息: 可选字符串)
+    Returns: (success: bool, message: Optional[str])
     """
-    # from .utils import show_snackbar # Dynamic import - Already imported at top
     from .state import ManagedProcessState  # Dynamic import
+    
+    process_id = "mmc"
 
-    process_id = script_path  # Use script path as ID for now, ensure uniqueness later if needed
-
-    # Prevent duplicate starts if ID already exists and is running
+    # 防止重复启动已存在的运行中进程
     existing_state = app_state.managed_processes.get(process_id)
     if (
         existing_state
-        and existing_state.status == "running"
+        and existing_state.status == "running" 
         and existing_state.pid
         and psutil.pid_exists(existing_state.pid)
     ):
-        msg = f"Process '{display_name}' (ID: {process_id}) is already running."
+        msg = f"进程 '{display_name}' (ID: {process_id}) 已在运行中"
         print(f"[Start Managed] {msg}", flush=True)
-        # show_snackbar(page, msg) # Maybe too noisy?
         return False, msg
 
     full_path = os.path.join(app_state.script_dir, script_path)
     if not os.path.exists(full_path):
-        msg = f"Error: Script file not found {script_path}"
-        print(f"[Start Managed] {msg}", flush=True)
+        msg = f"错误：未找到脚本文件 {script_path}"
+        print(f"[启动管理进程] {msg}", flush=True)
         show_snackbar(page, msg, error=True)
         return False, msg
 
@@ -490,9 +552,19 @@ def start_managed_process(
 
     # Create NEW state object for this process with its OWN queue and event
     # UNLESS it's bot.py, in which case we still use the old singletons for now
-    is_main_bot = script_path == "bot.py"
+    if type == "mmc":
+        is_main_bot = True
+    else:
+        is_main_bot = False
+    print(f"[Start Managed] is_main_bot={is_main_bot}")
     new_queue = app_state.output_queue if is_main_bot else queue.Queue()
     new_event = app_state.stop_event if is_main_bot else threading.Event()
+
+    # 检查是否之前运行过
+    has_run_before = False
+    existing_process = app_state.managed_processes.get(process_id)
+    if existing_process:
+        has_run_before = existing_process.has_run_before
 
     new_process_state = ManagedProcessState(
         process_id=process_id,
@@ -501,11 +573,12 @@ def start_managed_process(
         output_queue=new_queue,
         stop_event=new_event,
         status="starting",
+        has_run_before=has_run_before  # 保留之前的运行状态
     )
-    # Add to managed processes *before* starting
+    
     app_state.managed_processes[process_id] = new_process_state
 
-    # --- Create and store ListView if not main bot --- #
+
     output_lv: Optional[ft.ListView] = None
     if is_main_bot:
         output_lv = app_state.output_list_view  # Use the main console view
@@ -513,6 +586,8 @@ def start_managed_process(
         # Create and store a new ListView for this specific process
         output_lv = ft.ListView(expand=True, spacing=2, padding=5, auto_scroll=True)  # 始终默认开启自动滚动
         new_process_state.output_list_view = output_lv
+    
+    # output_lv = app_state.output_list_view
 
     # Add starting message to the determined ListView
     if output_lv:
@@ -542,70 +617,30 @@ def start_managed_process(
             cmd_list = [app_state.python_path, "-u", full_path]
             executable_path = app_state.python_path
             print(f"[Start Managed - {process_id}] 使用用户指定的 Python: {executable_path}")
-        elif getattr(sys, "frozen", False):
-            # 打包后运行
-            executable_dir = os.path.dirname(sys.executable)
-
-            # 修改逻辑：这次我们直接指定 _internal 目录下的 Python 解释器
-            # 而不是尝试其他选项
-            try:
-                # _internal 目录是 PyInstaller 默认放置 Python 解释器的位置
-                internal_dir = os.path.join(executable_dir, "_internal")
-
-                if os.path.exists(internal_dir):
-                    print(f"[Start Managed - {process_id}] 找到 _internal 目录: {internal_dir}")
-
-                    # 在 _internal 目录中查找 python.exe
-                    python_exe = None
-                    python_paths = []
-
-                    # 首先尝试直接查找
-                    direct_python = os.path.join(internal_dir, "python.exe")
-                    if os.path.exists(direct_python):
-                        python_exe = direct_python
-                        python_paths.append(direct_python)
-
-                    # 如果没找到，进行递归搜索
-                    if not python_exe:
-                        for root, _, files in os.walk(internal_dir):
-                            if "python.exe" in files:
-                                path = os.path.join(root, "python.exe")
-                                python_paths.append(path)
-                                if not python_exe:  # 只取第一个找到的
-                                    python_exe = path
-
-                    # 记录所有找到的路径
-                    if python_paths:
-                        print(f"[Start Managed - {process_id}] 在 _internal 中找到的所有 Python.exe: {python_paths}")
-
-                    if python_exe:
-                        # 找到 Python 解释器，使用它来运行脚本
-                        cmd_list = [python_exe, "-u", full_path]
-                        executable_path = python_exe
-                        print(f"[Start Managed - {process_id}] 使用打包内部的 Python: {executable_path}")
-                    else:
-                        # 如果找不到，只能使用脚本文件直接执行
-                        print(f"[Start Managed - {process_id}] 无法在 _internal 目录中找到 python.exe")
-                        cmd_list = [full_path]
-                        executable_path = full_path
-                        print(f"[Start Managed - {process_id}] 直接执行脚本: {executable_path}")
-                else:
-                    # _internal 目录不存在，尝试直接执行脚本
-                    print(f"[Start Managed - {process_id}] _internal 目录不存在: {internal_dir}")
-                    cmd_list = [full_path]
-                    executable_path = full_path
-                    print(f"[Start Managed - {process_id}] 直接执行脚本: {executable_path}")
-            except Exception as path_err:
-                print(f"[Start Managed - {process_id}] 查找 Python 路径时出错: {path_err}")
-                # 如果出现异常，尝试直接执行脚本
-                cmd_list = [full_path]
-                executable_path = full_path
-                print(f"[Start Managed - {process_id}] 出错回退：直接执行脚本 {executable_path}")
         else:
-            # 源码运行，使用当前的 Python 解释器
-            cmd_list = [sys.executable, "-u", full_path]
-            executable_path = sys.executable
-            print(f"[Start Managed - {process_id}] 源码模式：使用当前 Python ({executable_path})")
+            # 不再尝试使用内部解释器或当前解释器
+            error_msg = "未设置有效的 Python 解释器路径。请在设置中指定 Python 解释器路径。"
+            print(f"[Start Managed - {process_id}] {error_msg}")
+            
+            if output_lv and len(output_lv.controls) > 0:
+                output_lv.controls.append(ft.Text(f"错误: {error_msg}", color=ft.colors.RED))
+                if page:
+                    try:
+                        output_lv.update()
+                    except:
+                        pass  # 忽略可能的更新错误
+            
+            # 显示错误消息
+            if page:
+                show_snackbar(page, error_msg, error=True)
+            
+            # 更新状态
+            new_process_state.status = "error"
+            if is_main_bot:
+                app_state.clear_process()
+                update_buttons_state(page, app_state, is_running=False)
+            
+            return False, error_msg
 
         print(f"[Start Managed - {process_id}] 最终命令列表: {cmd_list}")
 
@@ -631,6 +666,7 @@ def start_managed_process(
         new_process_state.process_handle = process
         new_process_state.pid = process.pid
         new_process_state.status = "running"
+        new_process_state.has_run_before = True  # 标记为已运行过
         print(f"[Start Managed - {process_id}] Subprocess started. PID: {process.pid}", flush=True)
 
         # If it's the main bot, also update the old state vars for compatibility
@@ -648,9 +684,14 @@ def start_managed_process(
         output_thread.start()
         print(f"[Start Managed - {process_id}] Output reader thread started.", flush=True)
 
-        # Start the PARAMETERIZED processor loop task
-        # Pass the determined output_lv (either main console or the new one)
-        page.run_task(output_processor_loop, page, app_state, process_id, new_queue, new_event, output_lv)
+
+        page.run_task(output_processor_loop,
+                    page=page,
+                    app_state=app_state,
+                    process_id=process_id,
+                    output_queue=new_queue,
+                    stop_event=new_event,
+                    target_list_view=output_lv)
         print(f"[Start Managed - {process_id}] Output processor loop scheduled.", flush=True)
 
         return True, f"Process '{display_name}' started successfully."
@@ -678,40 +719,29 @@ def start_managed_process(
 
 def start_bot_and_show_console(page: ft.Page, app_state: "AppState"):
     """
-    Starts the main bot process (using the path from app_state.bot_script_path)
-    and navigates to the console view.
-    Uses the new start_managed_process internally.
+    启动主机器人进程(使用app_state.bot_script_path中的路径)
+    并导航到控制台视图。
+    内部使用新的start_managed_process方法。
     """
-    print("[Start Console] Attempting to start main bot process and show console...")
 
-    # Use the configurable bot script path from AppState
     bot_script = app_state.bot_script_path
     print(f"[Start Console] Using bot script path: {bot_script}")
-
+    print(f"[Start Console] 调用start_managed_process,bot_script={bot_script}")
     # --- Call the generic start function --- #
-    # Pass None for target_list_view, as the main console view uses app_state.output_list_view
     success, error_message = start_managed_process(
         script_path=bot_script,
+        type = "mmc",
         display_name="MaiCore",  # Display name for the main bot
         page=page,
         app_state=app_state,
-        # target_list_view=None # Removed parameter
     )
 
     if success:
         print("[Start Console] start_managed_process reported success.")
-        # Navigate to console view
         page.go("/console")
-        # Button state is updated within start_managed_process via set_process
-        # update_buttons_state(page, app_state, is_running=True) # No longer needed here
     else:
         print(f"[Start Console] start_managed_process failed: {error_message}")
-        # Ensure button state reflects failure
         update_buttons_state(page, app_state, is_running=False)
-        # Show error message (snackbar shown inside start_managed_process)
-        # if page and error_message:
-        #    show_snackbar(page, f"启动失败: {error_message}", bgcolor=ft.colors.RED_200)
 
 
-# --- Application Exit Cleanup (No Change Needed) ---
-# cleanup_on_exit remains the same, registered with atexit in launcher
+

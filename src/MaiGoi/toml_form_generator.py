@@ -621,34 +621,47 @@ def load_bot_config_template(app_state) -> Dict[str, Any]:
 def get_bot_config_path(app_state) -> Path:
     # Helper to get the path, assuming config_manager can provide it
     from .config_manager import get_config_path
-    path = get_config_path("bot")
+    
+    # 重要：使用 app_state.bot_base_dir 作为 base_dir 参数
+    if not hasattr(app_state, 'bot_base_dir') or not app_state.bot_base_dir:
+        print("[toml_form_generator] Error: app_state.bot_base_dir 未设置，无法确定 bot_config.toml 路径")
+        raise ValueError("app_state.bot_base_dir is not set, cannot determine bot_config.toml path")
+    
+    path = get_config_path("bot", base_dir=app_state.bot_base_dir)
     if not path:
-        raise FileNotFoundError("Could not determine path for bot_config.toml")
+        raise FileNotFoundError(f"Could not determine path for bot_config.toml in {app_state.bot_base_dir}/config/")
+    
+    print(f"[toml_form_generator] 确定 bot_config.toml 路径: {path}")
     return path
 
 def load_bot_config(app_state) -> Dict[str, Any]:
     """加载 Bot 配置文件 (bot_config.toml)"""
     from .config_manager import load_config
 
-    config_path = get_bot_config_path(app_state)
-    print(f"加载 Bot 配置: {config_path}")
-
     try:
-        # 使用 config_manager 的 load_config 加载
-        loaded_data = load_config(config_type="bot")
+        # 直接使用 app_state.bot_base_dir 作为 base_dir 参数
+        if not hasattr(app_state, 'bot_base_dir') or not app_state.bot_base_dir:
+            print("[toml_form_generator] Error: app_state.bot_base_dir 未设置，无法加载 bot_config.toml")
+            raise ValueError("app_state.bot_base_dir is not set, cannot load bot_config.toml")
+            
+        print(f"[toml_form_generator] 尝试从 {app_state.bot_base_dir}/config/ 加载 Bot 配置")
+        
+        # 正确使用 app_state.bot_base_dir
+        loaded_data = load_config(config_type="bot", base_dir=app_state.bot_base_dir)
 
-        # 可选：与模板合并以确保所有键存在（如果需要）
-        # template = load_bot_config_template(app_state)
-        # merged_config = {**template, **loaded_data}
-        # return merged_config
+        # 如果加载失败但没有抛出异常，提供更多信息
+        if not loaded_data:
+            print(f"[toml_form_generator] 警告：Bot 配置文件加载成功但为空")
+        else:
+            print(f"[toml_form_generator] 成功加载 Bot 配置，包含 {len(loaded_data)} 个顶级键")
 
         return loaded_data
 
-    except FileNotFoundError:
-        print(f"Bot 配置文件未找到: {config_path}, 返回空字典")
+    except FileNotFoundError as e:
+        print(f"[toml_form_generator] Bot 配置文件未找到: {e}, 返回空字典")
         return {}
     except Exception as e:
-        print(f"加载 Bot 配置文件时发生错误: {e}")
+        print(f"[toml_form_generator] 加载 Bot 配置文件时发生错误: {e}")
         import traceback
 
         traceback.print_exc()

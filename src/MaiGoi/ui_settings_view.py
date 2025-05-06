@@ -1,5 +1,6 @@
 import flet as ft
 import tomlkit
+from pathlib import Path
 
 from .state import AppState
 from .utils import show_snackbar  # Assuming show_snackbar is in utils
@@ -24,14 +25,14 @@ def save_bot_config(page: ft.Page, app_state: AppState, new_config_data: dict):
         show_snackbar(page, f"保存 Bot 配置失败: {e}", error=True)
 
 
-def save_bot_config_changes(page: ft.Page, config_to_save: dict, silent: bool = False):
+def save_bot_config_changes(page: ft.Page, config_to_save: dict, app_state: AppState, silent: bool = False):
     """Handles saving changes for bot_config.toml"""
     if not silent:
         print("[Settings] Saving Bot Config (TOML) changes...")
     # Assuming save_config needs path, let's build it or adapt save_config
     # For now, let's assume save_config can handle type='bot'
     # config_path = get_bot_config_path(app_state) # Need app_state if using this
-    success = save_config(config_to_save, config_type="bot")
+    success = save_config(config_to_save, config_type="bot", base_dir=app_state.bot_base_dir)
     if not silent:
         if success:
             message = "Bot 配置已保存！"
@@ -42,11 +43,11 @@ def save_bot_config_changes(page: ft.Page, config_to_save: dict, silent: bool = 
         print("[Settings] Error during silent save of Bot Config.")
 
 
-def save_lpmm_config_changes(page: ft.Page, config_to_save: dict, silent: bool = False):
+def save_lpmm_config_changes(page: ft.Page, config_to_save: dict, app_state: AppState, silent: bool = False):
     """Handles saving changes for lpmm_config.toml"""
     if not silent:
         print("[Settings] Saving LPMM Config (TOML) changes...")
-    success = save_config(config_to_save, config_type="lpmm")  # Use type 'lpmm'
+    success = save_config(config_to_save, config_type="lpmm", base_dir=app_state.bot_base_dir)
     if not silent:
         if success:
             message = "LPMM 配置已保存！"
@@ -62,7 +63,7 @@ def save_gui_config_changes(page: ft.Page, app_state: AppState, silent: bool = F
     if not silent: # Only print if not silent
         print("[Settings] Saving GUI Config changes...")
     # gui_config is directly in app_state, no need to pass config_to_save
-    success = save_config(app_state.gui_config, config_type="gui")
+    success = save_config(app_state.gui_config, config_type="gui", base_dir=app_state.bot_base_dir)
     if not silent: # Only show snackbar if not silent
         if success:
             message = "GUI 配置已保存！"
@@ -85,15 +86,17 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
         nonlocal current_config_data
         print("[Settings] Loading Bot Config Editor")
         try:
-            current_bot_config = load_bot_config(app_state)
+            current_bot_config = load_config(config_type="bot", base_dir=app_state.bot_base_dir)
             if not current_bot_config:
-                raise ValueError("Bot config could not be loaded.")
+                if not app_state.bot_base_dir:
+                    raise ValueError("Bot base directory is not set. Cannot load bot config.")
+                raise ValueError(f"Bot config could not be loaded from {app_state.bot_base_dir / 'config' / 'bot_config.toml'}.")
             current_config_data = current_bot_config # Keep reference if needed elsewhere
             content_area.controls.clear()
 
             # Define the save callback for the bot config
             def bot_save_callback(data_to_save):
-                return save_bot_config_changes(page, data_to_save, silent=True)
+                return save_bot_config_changes(page, data_to_save, app_state, silent=True)
 
             # Pass the callback to the form generator
             form_generator = create_toml_form(
@@ -119,15 +122,17 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
         nonlocal current_config_data
         print("[Settings] Loading LPMM Config Editor")
         try:
-            lpmm_config = load_config(config_type="lpmm")
+            lpmm_config = load_config(config_type="lpmm", base_dir=app_state.bot_base_dir)
             if not lpmm_config:
-                raise ValueError("LPMM config could not be loaded.")
+                if not app_state.bot_base_dir:
+                    raise ValueError("Bot base directory is not set. Cannot load LPMM config.")
+                raise ValueError(f"LPMM config could not be loaded from {app_state.bot_base_dir / 'config' / 'lpmm_config.toml'}.")
             current_config_data = lpmm_config # Keep reference
             content_area.controls.clear()
 
             # Define the save callback for LPMM config
             def lpmm_save_callback(data_to_save):
-                return save_lpmm_config_changes(page, data_to_save, silent=True)
+                return save_lpmm_config_changes(page, data_to_save, app_state, silent=True)
 
             # Pass the callback to the form generator
             form_generator = create_toml_form(
@@ -290,6 +295,31 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     app_state.bot_script_path = new_path
                     app_state.gui_config["bot_script_path"] = new_path
                     print(f"[Settings] MaiCore 脚本路径已暂存: {new_path}")
+                    
+                    # ---- 重要：更新 bot_base_dir ---- #
+                    # 基于新的 bot_script_path 计算 bot_base_dir
+                    try:
+                        bot_script_abs_path = Path(new_path).resolve()
+                        if bot_script_abs_path.is_file():
+                            # 新的 bot.py 路径有效，更新 bot_base_dir
+                            app_state.bot_base_dir = bot_script_abs_path.parent
+                            print(f"[Settings] bot_base_dir 已更新: {app_state.bot_base_dir}")
+                            
+                            # 检查并创建 config 目录
+                            config_dir = app_state.bot_base_dir / "config"
+                            if not config_dir.exists():
+                                try:
+                                    config_dir.mkdir(exist_ok=True)
+                                    print(f"[Settings] 已创建 config 目录: {config_dir}")
+                                except Exception as e:
+                                    print(f"[Settings] 创建 config 目录失败: {e}")
+                        else:
+                            # 文件不存在，打印警告但仍然更新 bot_base_dir
+                            print(f"[Settings] 警告: 文件 {bot_script_abs_path} 不存在，但仍使用其父目录作为 bot_base_dir")
+                            app_state.bot_base_dir = bot_script_abs_path.parent
+                    except Exception as e:
+                        print(f"[Settings] 更新 bot_base_dir 时出错: {e}")
+                    
                     trigger_auto_save() # Auto-save
                     saved = True
             else:
@@ -298,6 +328,11 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     app_state.bot_script_path = "bot.py" # Revert to default if cleared
                     app_state.gui_config["bot_script_path"] = "bot.py"
                     bot_script_path_textfield.value = "bot.py" # Update textfield too
+                    
+                    # 重置 bot_base_dir 到当前工作目录
+                    app_state.bot_base_dir = Path(".").resolve()
+                    print(f"[Settings] 已重置 bot_base_dir: {app_state.bot_base_dir}")
+                    
                     print("[Settings] MaiCore 脚本路径已清除, 恢复默认: bot.py")
                     trigger_auto_save() # Auto-save
                     saved = True
@@ -313,6 +348,29 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
             if e.files:
                 chosen_path = e.files[0].path
                 bot_script_path_textfield.value = chosen_path
+                
+                # 直接更新 bot_base_dir，而不依赖 on_change 事件的处理过程
+                try:
+                    # 计算并更新 bot_base_dir
+                    bot_script_abs_path = Path(chosen_path).resolve()
+                    if bot_script_abs_path.is_file():
+                        app_state.bot_base_dir = bot_script_abs_path.parent
+                        print(f"[Settings] 已直接更新 bot_base_dir: {app_state.bot_base_dir}")
+                        
+                        # 检查并创建 config 目录
+                        config_dir = app_state.bot_base_dir / "config"
+                        if not config_dir.exists():
+                            try:
+                                config_dir.mkdir(exist_ok=True)
+                                print(f"[Settings] 已创建 config 目录: {config_dir}")
+                            except Exception as e:
+                                print(f"[Settings] 创建 config 目录失败: {e}")
+                    else:
+                        print(f"[Settings] 警告: 所选文件 {bot_script_abs_path} 无法访问")
+                except Exception as e:
+                    print(f"[Settings] 直接更新 bot_base_dir 时出错: {e}")
+                
+                # 触发现有的更改处理逻辑
                 # Trigger the on_change handler to update state and auto-save
                 on_bot_path_change(ft.ControlEvent(target=bot_script_path_textfield.uid, name="change", data=chosen_path, control=bot_script_path_textfield, page=page))
                 page.update()

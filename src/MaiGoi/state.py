@@ -24,6 +24,7 @@ class ManagedProcessState:
     # Store UI references if needed later, e.g., for dedicated output views
     # output_view_controls: Optional[List[ft.Control]] = None
     output_list_view: Optional[ft.ListView] = None  # Added to hold the specific ListView for this process
+    has_run_before: bool = False  # 添加标志来跟踪进程是否曾经运行过
 
 
 class AppState:
@@ -35,11 +36,10 @@ class AppState:
         self.bot_pid: Optional[int] = None
         self.output_queue: queue.Queue = queue.Queue()
         self.stop_event: threading.Event = threading.Event()
-        self.bot_script_path: str = "bot.py"  # Path to the main bot script, configurable
+        self.bot_script_path: str = ""  # 初始化为空字符串
 
         # UI related state
         self.output_list_view: Optional[ft.ListView] = None
-        self.start_bot_button: Optional[ft.FilledButton] = None
         self.console_action_button: Optional[ft.ElevatedButton] = None
         self.is_auto_scroll_enabled: bool = True  # 默认启用自动滚动
         self.manual_viewing: bool = False  # 手动观看模式标识，用于修复自动滚动关闭时的位移问题
@@ -110,6 +110,7 @@ class AppState:
             output_queue=self.output_queue,
             stop_event=self.stop_event,
             status="running",
+            has_run_before=False  # Assuming it hasn't run before
         )
         self.managed_processes[process_id] = new_process_state
         print(

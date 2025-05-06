@@ -25,22 +25,42 @@ def get_config_path(config_type: str = "gui", base_dir: Optional[Path] = None) -
         print(f"[Config] Error: Unknown config type '{config_type}'")
         return None
 
-    # Determine the base directory relative to this file
-    # Assumes config_manager.py is in src/MaiGoi/
-    try:
-        # Use provided base_dir if available, otherwise default to project root relative to this file
-        if base_dir is None:
-            print("[Config] Warning: base_dir not provided to get_config_path, attempting to default relative to script.")
-            # Default logic: Assume project root is two levels up from this file's parent
-            # This might be less reliable if the structure changes.
-            script_dir = Path(__file__).parent.parent.parent  # Project Root (MaiBot-Core/)
-        else:
-            script_dir = base_dir # Use the provided base directory
+    # --- 改进的 Base Directory 处理 --- #
+    if base_dir is None:
+        print(f"[Config] 警告: 未提供 base_dir 参数，尝试使用默认逻辑...")
+        # 尝试使用相对于当前脚本的默认位置
+        try:
+            base_dir = Path(__file__).parent.parent.parent  # 默认为项目根目录
+            print(f"[Config] 使用默认的 base_dir: {base_dir}")
+        except Exception as e:
+            print(f"[Config] 无法确定默认的 base_dir: {e}")
+            return None
+    elif not isinstance(base_dir, Path):
+        # 尝试将非 Path 对象转换为 Path
+        try:
+            base_dir = Path(base_dir)
+            print(f"[Config] 已转换 base_dir 为 Path 对象: {base_dir}")
+        except Exception as e:
+            print(f"[Config] 无法将 base_dir 转换为 Path 对象: {e}")
+            return None
 
-        config_path = script_dir / CONFIG_DIR / filename
+    # 确保 base_dir 是绝对路径
+    try:
+        if not base_dir.is_absolute():
+            print(f"[Config] base_dir '{base_dir}' 不是绝对路径，尝试解析...")
+            base_dir = base_dir.resolve()
+            print(f"[Config] 已解析 base_dir 为: {base_dir}")
+    except Exception as e:
+        print(f"[Config] 解析 base_dir 时出错: {e}")
+        # 继续使用原始 base_dir
+
+    try:
+        # 构建完整的配置文件路径
+        config_path = base_dir / CONFIG_DIR / filename
+        print(f"[Config] 计算出的配置路径: {config_path}")
         return config_path
     except Exception as e:
-        print(f"[Config] Error determining config path for type '{config_type}': {e}")
+        print(f"[Config] 构建配置路径时出错: {e}")
         return None
 
 
@@ -76,16 +96,17 @@ def load_config(config_type: str = "gui", base_dir: Optional[Path] = None) -> Di
                     #     save_config(config_data, config_type="gui") # Avoid infinite loop if save fails
                 return config_data
         else:
-            print(f"[Config] {config_type} config file not found, creating with defaults.")
-            # Save default config
-            save_config(default_config_to_use.copy(), config_type=config_type)
+            print(f"[Config] {config_type} config file not found at '{config_path}', creating with defaults.")
+            # Save default config - *** Crucially, pass base_dir here ***
+            save_config(default_config_to_use.copy(), config_type=config_type, base_dir=base_dir)
             return default_config_to_use.copy()  # Return a copy
     except FileNotFoundError:
-        print(f"[Config] {config_type} config file not found (FileNotFoundError), creating with defaults.")
-        save_config(default_config_to_use.copy(), config_type=config_type)  # Attempt to save default
+        print(f"[Config] {config_type} config file not found at '{config_path}' (FileNotFoundError), creating with defaults.")
+        # Attempt to save default - *** Crucially, pass base_dir here ***
+        save_config(default_config_to_use.copy(), config_type=config_type, base_dir=base_dir)
         return default_config_to_use.copy()
     except toml.TomlDecodeError as e:
-        print(f"[Config] Error decoding {config_type} TOML file: {e}. Using default.")
+        print(f"[Config] Error decoding {config_type} TOML file at '{config_path}': {e}. Using default.")
         # Decide whether to return default or empty on decode error
         default_config_to_use = DEFAULT_GUI_CONFIG if config_type == "gui" else {}
         return default_config_to_use.copy()

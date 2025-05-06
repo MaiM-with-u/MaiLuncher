@@ -3,10 +3,6 @@ from typing import Optional, TYPE_CHECKING
 import psutil
 import os
 import sys
-import asyncio
-
-# Import components and state
-from .flet_interest_monitor import InterestMonitorDisplay
 
 if TYPE_CHECKING:
     from .state import AppState
@@ -70,15 +66,7 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
     """Creates the main view ('/') of the application."""
     # --- Set Page Padding to Zero --- #
     page.padding = 0
-    # page.update() # Update the page to apply the padding change - 移除这行，避免闪烁
-    # ------------------------------ #
 
-    # Get the main button from state (should be created in launcher.py main)
-    start_button = app_state.start_bot_button
-    if not start_button:
-        print("[Main View] Error: start_bot_button not initialized in state! Creating placeholder.")
-        start_button = ft.FilledButton("Error - Reload App")
-        app_state.start_bot_button = start_button  # Store placeholder back just in case
 
     from .utils import run_script  # Dynamic import to avoid cycles
 
@@ -486,257 +474,6 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
     )
 
 
-def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
-    """Creates the console output view ('/console'), including the interest monitor."""
-    # Get UI elements from state
-    output_list_view = app_state.output_list_view
-    from .process_manager import update_buttons_state  # Dynamic import
-
-    # 默认开启自动滚动
-    app_state.is_auto_scroll_enabled = True
-
-    # Create ListView if it doesn't exist (as a fallback, should be created by start_bot)
-    if not output_list_view:
-        output_list_view = ft.ListView(expand=True, spacing=2, auto_scroll=app_state.is_auto_scroll_enabled, padding=5)
-        app_state.output_list_view = output_list_view  # Store back to state
-        print("[Create Console View] Fallback: Created ListView.")
-
-    # --- Create or get InterestMonitorDisplay instance --- #
-    # Ensure the same instance is used if the view is recreated
-    if app_state.interest_monitor_control is None:
-        print("[Create Console View] Creating InterestMonitorDisplay instance")
-        app_state.interest_monitor_control = InterestMonitorDisplay()  # Store in state
-    else:
-        print("[Create Console View] Using existing InterestMonitorDisplay instance from state")
-        # Optional: Trigger reactivation if needed
-        # asyncio.create_task(app_state.interest_monitor_control.start_updates_if_needed())
-
-    interest_monitor = app_state.interest_monitor_control
-
-    # --- 为控制台输出和兴趣监控创建容器，以便动态调整大小 --- #
-    output_container = ft.Container(
-        content=output_list_view,
-        expand=4,  # 在左侧 Column 内部分配比例
-        border=ft.border.only(bottom=ft.border.BorderSide(1, ft.colors.OUTLINE)),
-    )
-
-    monitor_container = ft.Container(
-        content=interest_monitor,
-        expand=4,  # 在左侧 Column 内部分配比例
-    )
-
-    # --- 设置兴趣监控的切换回调函数 --- #
-    def on_monitor_toggle(is_expanded):
-        if is_expanded:
-            # 监控器展开时，恢复原比例
-            output_container.expand = 4
-            monitor_container.expand = 4
-        else:
-            # 监控器隐藏时，让输出区占据更多空间
-            output_container.expand = 9
-            monitor_container.expand = 0
-
-        # 更新容器以应用新布局
-        output_container.update()
-        monitor_container.update()
-
-    # 为监控器设置回调函数
-    interest_monitor.on_toggle = on_monitor_toggle
-
-    # --- Auto-scroll toggle button callback (remains separate) --- #
-    def toggle_auto_scroll(e):
-        app_state.is_auto_scroll_enabled = not app_state.is_auto_scroll_enabled
-        lv = app_state.output_list_view  # Get potentially updated list view
-        if lv:
-            lv.auto_scroll = app_state.is_auto_scroll_enabled
-
-            # 当关闭自动滚动时，记录当前滚动位置
-            if not app_state.is_auto_scroll_enabled:
-                # 标记视图正在手动观看模式，以便在更新时保持位置
-                app_state.manual_viewing = True
-            else:
-                # 开启自动滚动时，关闭手动观看模式
-                app_state.manual_viewing = False
-
-        # Update button appearance (assuming button reference is available)
-        # e.control is the Container now
-        # We need to update the Text control stored in its data attribute
-        text_control = e.control.data if isinstance(e.control.data, ft.Text) else None
-        if text_control:
-            text_control.value = "自动滚动 开" if app_state.is_auto_scroll_enabled else "自动滚动 关"
-        else:
-            print("[toggle_auto_scroll] Warning: Could not find Text control in button data.")
-        # The icon and tooltip are on the Container itself (though tooltip might be better on Text?)
-        # e.control.icon = ft.icons.PLAY_ARROW if app_state.is_auto_scroll_enabled else ft.icons.PAUSE # Icon removed
-        e.control.tooltip = "切换控制台自动滚动"  # Tooltip remains useful
-        print(f"Auto-scroll {'enabled' if app_state.is_auto_scroll_enabled else 'disabled'}.", flush=True)
-        # Update the container to reflect text changes
-        # page.run_task(update_page_safe, page) # This updates the whole page
-        e.control.update()  # Try updating only the container first
-
-    # --- Card Styling (Copied from create_main_view for reuse) --- #
-    card_shadow = ft.BoxShadow(
-        spread_radius=1,
-        blur_radius=10,
-        color=ft.colors.with_opacity(0.2, ft.colors.BLACK87),
-        offset=ft.Offset(1, 2),
-    )
-    card_radius = ft.border_radius.all(4)
-    card_bgcolor = ft.colors.with_opacity(0.65, ft.colors.PRIMARY_CONTAINER)
-    card_padding = ft.padding.symmetric(vertical=8, horizontal=12)  # Smaller padding for console buttons
-
-    # --- Create Buttons --- #
-    # Create the main action button (Start/Stop) as a styled Container
-    console_action_button_text = ft.Text("...")  # Placeholder text, updated by update_buttons_state
-    console_action_button = ft.Container(
-        content=console_action_button_text,
-        bgcolor=card_bgcolor,  # Apply style
-        border_radius=card_radius,
-        shadow=card_shadow,
-        padding=card_padding,
-        ink=True,
-        # on_click is set by update_buttons_state
-    )
-    app_state.console_action_button = console_action_button  # Store container ref
-
-    # Create the auto-scroll toggle button as a styled Container with Text
-    auto_scroll_text_content = "自动滚动 开" if app_state.is_auto_scroll_enabled else "自动滚动 关"
-    auto_scroll_text = ft.Text(auto_scroll_text_content, size=12)
-    toggle_button = ft.Container(
-        content=auto_scroll_text,
-        tooltip="切换控制台自动滚动",
-        on_click=toggle_auto_scroll,  # Attach click handler here
-        bgcolor=card_bgcolor,  # Apply style
-        border_radius=card_radius,
-        shadow=card_shadow,
-        padding=card_padding,
-        ink=True,
-        # Remove left margin
-        margin=ft.margin.only(right=10),
-    )
-    # Store the text control inside the toggle button container for updating
-    toggle_button.data = auto_scroll_text  # Store Text reference in data attribute
-
-    # --- 附加信息区 Column (在 View 级别创建) ---
-    info_top_section = ft.Column(
-        controls=[
-            ft.Text("附加信息 - 上", weight=ft.FontWeight.BOLD),
-            ft.Divider(),
-            ft.Text("..."),  # 上半部分占位符
-        ],
-        expand=True,  # 让上半部分填充可用垂直空间
-        scroll=ft.ScrollMode.ADAPTIVE,
-    )
-    info_bottom_section = ft.Column(
-        controls=[
-            ft.Text("附加信息 - 下", weight=ft.FontWeight.BOLD),
-            ft.Divider(),
-            ft.Text("..."),  # 下半部分占位符
-            # 将按钮放在底部
-            # Wrap the Row in a Container to apply padding
-            ft.Container(
-                content=ft.Row(
-                    [console_action_button, toggle_button],
-                    # alignment=ft.MainAxisAlignment.SPACE_AROUND,
-                    alignment=ft.MainAxisAlignment.START,  # Align buttons to the start
-                ),
-                # Apply padding to the container holding the row
-                padding=ft.padding.only(bottom=10),
-            ),
-        ],
-        # height=100, # 可以给下半部分固定高度，或者让它自适应
-        spacing=5,
-        # Remove padding from the Column itself
-        # padding=ft.padding.only(bottom=10)
-    )
-    info_column = ft.Column(
-        controls=[
-            # ft.Text("附加信息区", weight=ft.FontWeight.BOLD),
-            # ft.Divider(),
-            info_top_section,
-            info_bottom_section,
-        ],
-        width=250,  # 增加宽度
-        # scroll=ft.ScrollMode.ADAPTIVE, # 内部分区滚动，外部不需要
-        spacing=10,  # 分区之间的间距
-    )
-
-    # --- Set Initial Button State --- #
-    # Call the helper AFTER the button is created and stored in state
-    is_initially_running = app_state.bot_pid is not None and psutil.pid_exists(app_state.bot_pid)
-    update_buttons_state(page, app_state, is_running=is_initially_running)
-
-    # --- 视图布局 --- #
-    console_view = ft.View(
-        "/console",  # View route
-        [
-            ft.AppBar(title=ft.Text("Mai控制台")),
-            # --- 主要内容区域改为 Row --- #
-            ft.Row(
-                controls=[
-                    # --- 左侧 Column (可扩展) --- #
-                    ft.Column(
-                        controls=[
-                            # 1. Console Output Area
-                            output_container,  # 使用容器替代直接引用
-                            # 2. Interest Monitor Area
-                            monitor_container,  # 使用容器替代直接引用
-                        ],
-                        expand=True,  # 让左侧 Column 占据 Row 的大部分空间
-                    ),
-                    # --- 右侧 Column (固定宽度) --- #
-                    info_column,
-                ],
-                expand=True,  # 让 Row 填满 AppBar 下方的空间
-            ),
-        ],
-        padding=0,  # View padding set to 0
-        # Flet automatically handles calling will_unmount on UserControls like InterestMonitorDisplay
-        # when the view is removed or the app closes.
-        # on_disappear=lambda _: asyncio.create_task(interest_monitor.will_unmount_async()) if interest_monitor else None
-    )
-
-    # Check if we need to show the Python path dialog
-    if app_state.needs_python_path_dialog:
-        app_state.needs_python_path_dialog = False  # Reset the flag
-        dlg_instance = ft.AlertDialog(
-            title=ft.Text("设置 Python 路径"),
-            content=ft.Text("请在设置中设置 Python 路径，以便正常运行 Bot 和适配器。"),
-            actions=[
-                ft.TextButton("确定", on_click=lambda e: page.close(dlg_instance)),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            on_dismiss=lambda e: print("Python path dialog dismissed!"),
-        )
-
-        # Open the dialog using page.open()
-        if hasattr(page, 'open'):
-             # Use page.run_task to slightly delay opening, allowing view rendering
-            async def open_dialog_async():
-                await asyncio.sleep(0.3) # <--- Increased delay to 0.3 seconds
-                print("[open_dialog_async] Attempting to open Python path dialog.")
-                # Add try-except block to catch potential errors during page.open
-                try:
-                    if hasattr(page, 'open') and dlg_instance:
-                         print("[open_dialog_async] Calling page.open()...")
-                         page.open(dlg_instance)
-                         print("[open_dialog_async] page.open() called successfully.")
-                    else:
-                         print("[open_dialog_async] Error: page missing 'open' or dlg_instance invalid before calling open.")
-                except Exception as e_open_async:
-                     print(f"[open_dialog_async] Exception during page.open(): {e_open_async}")
-                     # Optionally reset flag if open fails critically?
-                     # app_state.needs_python_path_dialog = False # Consider implications
-
-            # Schedule the async opening
-            print("[Create Console View] Scheduling async dialog open task.")
-            page.run_task(open_dialog_async)
-        else:
-            print("[Create Console View] Error: page object does not have 'open' method!")
-
-    return console_view
-
-
 # --- Adapters View --- #
 def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
     """Creates the view for managing adapters (/adapters)."""
@@ -857,10 +594,10 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
         # It will create the specific ListView in the state
         success, message = start_managed_process(
             script_path=path_to_run,
+            type="adapter",
             display_name=display_name,
             page=page,
             app_state=app_state,
-            # No target_list_view needed here, it creates its own
         )
 
         if success:

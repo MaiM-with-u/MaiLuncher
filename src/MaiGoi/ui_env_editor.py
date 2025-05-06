@@ -66,7 +66,20 @@ class EnvEditor(ft.Column):
         super().__init__(spacing=5, scroll=ft.ScrollMode.ADAPTIVE, expand=True)
 
         self.app_state = app_state
-        self.env_path = Path(self.app_state.script_dir) / ".env"
+        # self.env_path = Path(self.app_state.script_dir) / ".env" # <-- Old incorrect path
+        # --- Determine .env path based on bot_base_dir --- #
+        if not hasattr(app_state, 'bot_base_dir') or not app_state.bot_base_dir:
+            # Handle error: bot_base_dir is essential for finding .env
+            print("[Env Editor] Error: app_state.bot_base_dir is not set. Cannot locate .env file.")
+            # You might want to disable the editor or show an error message in the UI
+            self.env_path = Path("./.env_error_bot_dir_not_set") # Use an invalid path
+            # Disable controls or show error message in the UI
+            self.controls = [ft.Text("错误：无法确定 Bot 目录，无法加载 .env 文件。请先在启动器设置中配置正确的 MaiCore 脚本路径。", color=ft.colors.ERROR)]
+            # Prevent further initialization
+            return
+        else:
+            self.env_path = app_state.bot_base_dir / ".env" # <-- Correct path relative to bot
+
         self.variables = load_env_data(self.env_path)
         self.debounce_interval = debounce_interval
         self.save_timer: Optional[threading.Timer] = None
