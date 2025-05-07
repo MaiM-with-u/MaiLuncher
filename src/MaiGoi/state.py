@@ -28,7 +28,7 @@ class ManagedProcessState:
 
 
 class AppState:
-    """Holds the shared state of the launcher application."""
+    """Holds the shared state of the main application."""
 
     def __init__(self):
         # Process related state
@@ -39,22 +39,27 @@ class AppState:
         self.bot_script_path: str = ""  # 初始化为空字符串
 
         # UI related state
-        self.output_list_view: Optional[ft.ListView] = None
+        self.output_list_view: ft.ListView = ft.ListView(expand=True, spacing=2, auto_scroll=True, padding=5, first_item_prototype=True) # Initialize here
         self.console_action_button: Optional[ft.ElevatedButton] = None
         self.is_auto_scroll_enabled: bool = True  # 默认启用自动滚动
         self.manual_viewing: bool = False  # 手动观看模式标识，用于修复自动滚动关闭时的位移问题
         self.interest_monitor_control: Optional[InterestMonitorDisplay] = None
         self.is_python_dialog_opening: bool = False # Flag to prevent multiple dialogs
         self.needs_python_path_dialog: bool = False # NEW flag
+        self.interest_monitoring_expanded: bool = True  # 默认为展开状态，您可以按需修改
 
         # Script directory (useful for paths)
-        self.script_dir: str = ""  # Will be set during initialization in launcher.py
+        self.script_dir: str = ""  # Will be set during initialization in main.py
         
         # Python 解释器路径 (用于运行 bot.py 和适配器)
         self.python_path: str = ""  # 用户自定义的 Python 路径，为空时使用默认路径
+        self.mmc_path: str = ""  # 用户自定义的 MMC 路径，为空时使用默认路径
 
         # --- Configuration State --- #
         self.gui_config: Dict[str, Any] = {}  # Loaded from gui_config.toml
+        self.bot_config: Dict[str, Any] = {}  # 用户自定义的 bot 配置，为空时使用默认配置
+        self.lpmm_config: Dict[str, Any] = {}  # 用户自定义的 lpmm 配置，为空时使用默认配置
+        
         self.adapter_paths: List[str] = []  # Specific list of adapter paths from config
 
         # --- Process Management State (NEW - For multi-process support) --- #

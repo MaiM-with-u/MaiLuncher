@@ -24,10 +24,14 @@ if "MAIBOT_API_PORT" in os.environ:
 
 print(f"[配置] 使用API地址: {API_BASE_URL}")
 
-REFRESH_INTERVAL_SECONDS = 1  # 刷新间隔（秒）
+REFRESH_INTERVAL_SECONDS = 5  # 刷新间隔（秒）
 MAX_HISTORY_POINTS = 1000  # 图表数据点 (Tkinter version uses 1000)
 MAX_STREAMS_TO_DISPLAY = 15  # 最多显示的流数量 (Tkinter version uses 15)
 MAX_QUEUE_SIZE = 30  # 历史想法队列最大长度 (Tkinter version uses 30)
+CHART_DISPLAY_TIMESPAN_SECONDS = 10 * 60  # 图表显示最近10分钟的数据
+LOG_TRUNCATE_INTERVAL_SECONDS = 10 * 60  # 每10分钟清理一次日志
+LOG_TRUNCATE_THRESHOLD_LINES = 600     # 当日志超过这么多行时触发清理
+LOG_TRUNCATE_RETAIN_LINES = 500        # 清理后，保留这么多行
 CHART_HEIGHT = 250  # 图表区域高度
 DEFAULT_AUTO_SCROLL = True  # 默认开启自动滚动
 
@@ -80,6 +84,7 @@ class InterestMonitorDisplay(ft.Column):
         
         
         self.log_reader_task = None
+        self.log_truncate_task = None # 新增：日志清理任务
         self.stream_history = {}  # {stream_id: deque([(ts, interest), ...])}
         self.probability_history = {}  # {stream_id: deque([(ts, probability), ...])}
         self.stream_display_names = {}  # {stream_id: display_name}
@@ -408,11 +413,13 @@ class InterestMonitorDisplay(ft.Column):
         self.content_area.visible = self.is_expanded
 
         # 调用回调函数通知父容器
-        if self.on_toggle:
+        if self.on_toggle and self.page:  # 确保页面和控件都已挂载
+            # print(f"[InterestMonitor] 调用回调函数通知父容器: {self.is_expanded}")
             self.on_toggle(self.is_expanded)
 
         # 更新UI
-        self.update()
+        if self.page:  # 确保页面存在再更新
+            self.update()
 
     def did_mount(self):
         print("[InterestMonitor] 控件已挂载，启动日志读取任务")
@@ -420,6 +427,7 @@ class InterestMonitorDisplay(ft.Column):
             # --- 首次加载历史想法 (可以在这里或 log_reader_loop 首次运行时加载) ---
             # self.page.run_task(self.load_and_process_log, initial_load=True) # 传递标志?
             self.log_reader_task = self.page.run_task(self.log_reader_loop)
+            self.log_truncate_task = self.page.run_task(self.truncate_log_file_periodically) # 启动日志清理任务
             # self.page.run_task(self.update_charts) # update_charts 会在 loop 中调用
         else:
             print("[InterestMonitor] 错误: 无法访问 self.page 来启动后台任务")
@@ -429,6 +437,9 @@ class InterestMonitorDisplay(ft.Column):
         if self.log_reader_task:
             self.log_reader_task.cancel()
             print("[InterestMonitor] 日志读取任务已取消 (will_unmount)")
+        if self.log_truncate_task: # 新增：取消日志清理任务
+            self.log_truncate_task.cancel()
+            print("[InterestMonitor] 日志清理任务已取消 (will_unmount)")
 
     async def log_reader_loop(self):
         while True:
@@ -444,6 +455,44 @@ class InterestMonitorDisplay(ft.Column):
                 self.update_status(f"日志读取错误: {e}", ft.colors.ERROR)
 
             await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+
+    async def truncate_log_file_periodically(self):
+        """每隔一段时间清理日志文件顶部的内容。"""
+        while True:
+            await asyncio.sleep(LOG_TRUNCATE_INTERVAL_SECONDS)
+            if not self.LOG_FILE_PATH or not os.path.exists(self.LOG_FILE_PATH):
+                print(f"[LogTruncate] 日志文件路径未设置或文件不存在: {self.LOG_FILE_PATH}")
+                continue
+            
+            print(f"[LogTruncate] 开始尝试清理日志文件: {self.LOG_FILE_PATH}")
+            try:
+                with open(self.LOG_FILE_PATH, "r+", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    current_line_count = len(lines)
+
+                    if current_line_count > LOG_TRUNCATE_THRESHOLD_LINES:
+                        # 计算要保留的行数，是从底部往上数的 LOG_TRUNCATE_RETAIN_LINES 行
+                        # 因此，要跳过顶部的 current_line_count - LOG_TRUNCATE_RETAIN_LINES 行
+                        lines_to_skip = current_line_count - LOG_TRUNCATE_RETAIN_LINES
+                        if lines_to_skip < 0: # 理论上不应发生，因为 current_line_count > THRESHOLD
+                            lines_to_skip = 0 
+                        
+                        lines_to_keep = lines[lines_to_skip:]
+                        
+                        f.seek(0)  # 移动到文件开头
+                        f.truncate() # 清空文件内容
+                        f.writelines(lines_to_keep) # 写回剩余的行
+                        print(f"[LogTruncate] 日志行数 {current_line_count} 超出 {LOG_TRUNCATE_THRESHOLD_LINES}。已清理，保留最新的 {len(lines_to_keep)} 行。")
+                    else:
+                        print(f"[LogTruncate] 日志行数 ({current_line_count}) 未超出 {LOG_TRUNCATE_THRESHOLD_LINES}，无需清理。")
+            except asyncio.CancelledError:
+                print("[LogTruncate] 日志清理任务被取消。")
+                break # 退出循环
+            except IOError as e:
+                print(f"[LogTruncate] 清理日志文件时发生IO错误: {e}")
+            except Exception as e:
+                print(f"[LogTruncate] 清理日志文件时发生未知错误: {e}")
+                traceback.print_exc()
 
     async def load_and_process_log(self):
         """读取并处理日志文件的新增内容。"""
@@ -652,7 +701,22 @@ class InterestMonitorDisplay(ft.Column):
         for stream_id, history in active_streams_sorted:
             print(f"[InterestMonitor] 流 {stream_id}: {len(history)} 个数据点")
 
-        min_ts, max_ts = self.get_time_range(self.stream_history)
+        # 清空现有图表数据和图例，为新的数据做准备
+        self.main_chart.data_series = []
+        self.legend_column.controls = []
+        # 如果当前没有选择特定的流查看详情，也清空详情图表和文本
+        if not self.selected_stream_id_for_details:
+            self.detail_chart_combined.data_series = [] # 清空详情图表的数据系列
+            self.detail_chart_combined.min_x = None     # 重置详情图表的X轴范围
+            self.detail_chart_combined.max_x = None
+            await self.update_detail_texts(None) # 清空详情区域的文本信息
+
+        # self.update() # 在这里更新可能会导致图表在填充数据前短暂显示为空，先注释掉
+        # return  # <--- 移除这个过早的 return 语句
+
+        # --- 基于过滤后的数据点重新构建图表系列 ---
+        current_time_for_cutoff = time.time()
+        cutoff_timestamp = current_time_for_cutoff - CHART_DISPLAY_TIMESPAN_SECONDS
 
         for stream_id, history in active_streams_sorted:
             if not history:
@@ -702,8 +766,19 @@ class InterestMonitorDisplay(ft.Column):
         self.main_chart.data_series = all_series
         self.main_chart.min_y = 0
         self.main_chart.max_y = 10
-        self.main_chart.min_x = min_ts
-        self.main_chart.max_x = max_ts
+        # self.main_chart.min_x = min_ts # min_x 和 max_x 将由 get_time_range 基于过滤数据设定
+        # self.main_chart.max_x = max_ts
+
+        # --- 计算主图表的X轴范围 --- #
+        # 我们需要基于 *所有活跃且过滤后有数据的流* 来确定总的X轴范围
+        all_filtered_history_for_main_chart = {}
+        for stream_id, history_data in active_streams_sorted: # active_streams_sorted 已经是过滤过显示数量的
+            if stream_id in self.stream_history and self.stream_history[stream_id]:
+                all_filtered_history_for_main_chart[stream_id] = self.stream_history[stream_id]
+        
+        min_x_main, max_x_main = self.get_time_range(all_filtered_history_for_main_chart, force_recent_timespan_seconds=CHART_DISPLAY_TIMESPAN_SECONDS)
+        self.main_chart.min_x = min_x_main
+        self.main_chart.max_x = max_x_main
 
         # --- 更新图例 ---
         self.legend_column.controls = legend_items
@@ -725,22 +800,32 @@ class InterestMonitorDisplay(ft.Column):
         min_ts_detail, max_ts_detail = None, None
 
         # --- 增加检查：如果没有选择流ID或流ID不在历史记录中，则直接返回
-        if not stream_id or stream_id not in self.stream_history:
-            print(f"[InterestMonitor] 没有找到流ID或未选择流ID: {stream_id}")
+        if not stream_id or (stream_id not in self.stream_history and stream_id not in self.probability_history):
+            print(f"[InterestMonitor] 详细图表：没有找到流ID或未选择流ID: {stream_id}")
             # 清空图表
             self.detail_chart_combined.data_series = []
+            self.detail_chart_combined.min_x = None # 清除min/max x,y
+            self.detail_chart_combined.max_x = None
+            self.detail_chart_combined.min_y = 0
+            self.detail_chart_combined.max_y = 10
 
             # 确保更新详情文本，清空信息
             await self.update_detail_texts(None)
+            if self.page and self.detail_chart_combined.page: # 确保控件已挂载
+                self.detail_chart_combined.update()
             return
 
+        current_time_for_cutoff = time.time()
+        cutoff_timestamp = current_time_for_cutoff - CHART_DISPLAY_TIMESPAN_SECONDS
+
         # --- 兴趣度图 ---
+        filtered_interest_history = []
         if stream_id and stream_id in self.stream_history and self.stream_history[stream_id]:
-            min_ts_detail, max_ts_detail = self.get_time_range({stream_id: self.stream_history[stream_id]})
-            try:
-                mpl_dates = [ts for ts, _ in self.stream_history[stream_id]]
-                interests = [interest for _, interest in self.stream_history[stream_id]]
-                if mpl_dates:
+            filtered_interest_history = [(ts, val) for ts, val in self.stream_history[stream_id] if ts >= cutoff_timestamp]
+            if filtered_interest_history:
+                try:
+                    mpl_dates = [ts for ts, _ in filtered_interest_history]
+                    interests = [interest for _, interest in filtered_interest_history]
                     interest_data_points = [
                         ft.LineChartDataPoint(x=ts, y=interest) for ts, interest in zip(mpl_dates, interests)
                     ]
@@ -751,28 +836,17 @@ class InterestMonitorDisplay(ft.Column):
                             stroke_width=2,
                         )
                     )
-            except Exception as plot_err:
-                print(f"绘制详情兴趣图时出错 Stream {stream_id}: {plot_err}")
+                except Exception as plot_err:
+                    print(f"绘制详情兴趣图时出错 Stream {stream_id}: {plot_err}")
 
         # --- 概率图 ---
+        filtered_probability_history = []
         if stream_id and stream_id in self.probability_history and self.probability_history[stream_id]:
-            try:
-                prob_dates = [ts for ts, _ in self.probability_history[stream_id]]
-                probabilities = [prob for _, prob in self.probability_history[stream_id]]
-                if prob_dates:
-                    if min_ts_detail is None:  # 如果兴趣图没有数据，单独计算时间范围
-                        min_ts_detail, max_ts_detail = self.get_time_range(
-                            {stream_id: self.probability_history[stream_id]}, is_prob=True
-                        )
-                    else:  # 合并时间范围
-                        min_prob_ts, max_prob_ts = self.get_time_range(
-                            {stream_id: self.probability_history[stream_id]}, is_prob=True
-                        )
-                        if min_prob_ts is not None:
-                            min_ts_detail = min(min_ts_detail, min_prob_ts)
-                        if max_prob_ts is not None:
-                            max_ts_detail = max(max_ts_detail, max_prob_ts)
-
+            filtered_probability_history = [(ts, val) for ts, val in self.probability_history[stream_id] if ts >= cutoff_timestamp]
+            if filtered_probability_history:
+                try:
+                    prob_dates = [ts for ts, _ in filtered_probability_history]
+                    probabilities = [prob for _, prob in filtered_probability_history]
                     # 调整HFC概率值到兴趣度的比例范围，便于在一个图表中显示
                     # 兴趣度范围0-10，将概率值x10
                     scaled_probabilities = [prob * 10 for prob in probabilities]
@@ -787,8 +861,24 @@ class InterestMonitorDisplay(ft.Column):
                             stroke_width=2,
                         )
                     )
-            except Exception as plot_err:
-                print(f"绘制详情概率图时出错 Stream {stream_id}: {plot_err}")
+                except Exception as plot_err:
+                    print(f"绘制详情概率图时出错 Stream {stream_id}: {plot_err}")
+        
+        # --- 计算详情图表的X轴范围 --- #
+        # 合并过滤后的兴趣度和概率历史数据来确定X轴
+        detail_chart_source_data = {}
+        if filtered_interest_history:
+            detail_chart_source_data[f"{stream_id}_interest"] = filtered_interest_history
+        if filtered_probability_history:
+             # 使用不同的key，即使是同一个stream_id，因为get_time_range期望value是(ts, val)列表
+            detail_chart_source_data[f"{stream_id}_prob"] = filtered_probability_history
+
+        if not detail_chart_source_data: # 如果过滤后两个都没有数据
+            print(f"[InterestMonitor] 详细图表：流 {stream_id} 在过去10分钟内无数据")
+            self.detail_chart_combined.data_series = [] # 清空系列
+            min_ts_detail, max_ts_detail = self.get_time_range({}, force_recent_timespan_seconds=CHART_DISPLAY_TIMESPAN_SECONDS)
+        else:
+            min_ts_detail, max_ts_detail = self.get_time_range(detail_chart_source_data, force_recent_timespan_seconds=CHART_DISPLAY_TIMESPAN_SECONDS)
 
         # 更新合并图表
         self.detail_chart_combined.data_series = combined_series
@@ -902,45 +992,72 @@ class InterestMonitorDisplay(ft.Column):
         if self.page and self.status_text.page:
             self.status_text.update()
 
-    def get_time_range(self, history_dict, is_prob=False):
+    def get_time_range(self, history_dict, is_prob=False, force_recent_timespan_seconds=None):
         """获取所有数据点的时间范围，确保即使没有数据也能返回有效的时间范围"""
         all_ts = []
-        target_history_key = self.probability_history if is_prob else self.stream_history
+        # target_history_key = self.probability_history if is_prob else self.stream_history
+        # ^^^ is_prob is not used anymore as history_dict now contains pre-selected data
 
         try:
-            for stream_id, _history in history_dict.items():
-                # 使用正确的历史记录字典
-                actual_history = target_history_key.get(stream_id)
-                if actual_history:
-                    all_ts.extend([ts for ts, _ in actual_history])
+            for _stream_id, history_data_list in history_dict.items(): # history_dict的value已经是 [(ts,val),...]
+                if history_data_list:
+                    all_ts.extend([ts for ts, _ in history_data_list])
 
-            if not all_ts:
-                # 如果没有时间戳，返回当前时间前后一小时的范围
-                now = time.time()
-                print(f"[InterestMonitor] 警告: 没有找到时间戳数据，使用当前时间: {now}")
-                return now - 3600, now + 60
+            now = time.time()
+            if not all_ts: # 如果没有数据点
+                if force_recent_timespan_seconds:
+                    # print(f"[get_time_range] 无数据点，强制使用最近 {force_recent_timespan_seconds} 秒范围")
+                    return now - force_recent_timespan_seconds, now
+                else:
+                    # print(f"[get_time_range] 无数据点，使用默认1小时前回溯")
+                    return now - 3600, now + 60 # 默认1小时前回溯, 1分钟余量
 
-            # 确保时间戳是有效的数字
-            valid_ts = [ts for ts in all_ts if isinstance(ts, (int, float))]
+            valid_ts = sorted([ts for ts in all_ts if isinstance(ts, (int, float))])
             if not valid_ts:
-                now = time.time()
-                print(f"[InterestMonitor] 警告: 没有有效的时间戳数据，使用当前时间: {now}")
-                return now - 3600, now + 60
+                if force_recent_timespan_seconds:
+                    # print(f"[get_time_range] 无有效数据点，强制使用最近 {force_recent_timespan_seconds} 秒范围")
+                    return now - force_recent_timespan_seconds, now
+                else:
+                    # print(f"[get_time_range] 无有效数据点，使用默认1小时前回溯")
+                    return now - 3600, now + 60
 
-            min_ts = min(valid_ts)
-            max_ts = max(valid_ts)
+            actual_min_ts = valid_ts[0]
+            actual_max_ts = valid_ts[-1]
 
-            # 确保时间范围不为零（避免图表问题）
-            if min_ts == max_ts:
-                print(f"[InterestMonitor] 警告: 最小和最大时间戳相同: {min_ts}")
-                padding = 60  # 如果只有一个点，前后加1分钟
+            if force_recent_timespan_seconds:
+                # 如果强制时间跨度，max_x 是 actual_max_ts (或当前时间如果前者更早)
+                # min_x 是 max_x - timespan，但不能早于 actual_min_ts
+                current_max_x = max(actual_max_ts, now - 5) # 给几秒buffer，防止图表看起来太空
+                current_min_x = current_max_x - force_recent_timespan_seconds
+                # print(f"[get_time_range] 强制范围: current_max_x={current_max_x}, current_min_x={current_min_x}, actual_min_ts={actual_min_ts}")
+                # 确保 min_x 不会比数据集中最早的时间点还早
+                # return max(current_min_x, actual_min_ts), current_max_x
+                # 修正：min_x 可以比 actual_min_ts 早，这样X轴的起点是固定的10分钟前
+                # 但如果 actual_max_ts 本身就很早 (例如1小时前的数据)，那么 min_x 应该基于 actual_max_ts
+                effective_max_x = actual_max_ts # 使用数据中的最新点作为右边界
+                effective_min_x = effective_max_x - force_recent_timespan_seconds
+                # 如果数据中的最早点比计算出的10分钟前的点还要晚，那么就用数据中的最早点作为左边界
+                # 这样可以避免左边有大量空白，如果数据本身不足10分钟的话
+                # final_min_x = max(effective_min_x, actual_min_ts) # 旧逻辑，会导致短数据被拉伸
+                # print(f"[get_time_range] 强制范围: effective_max_x={effective_max_x}, effective_min_x={effective_min_x}")
+                return effective_min_x, effective_max_x
             else:
-                padding = (max_ts - min_ts) * 0.05  # 正常情况下添加5%的填充
+                # 默认行为: 基于数据范围加padding
+                padding = 0
+                if actual_min_ts == actual_max_ts:
+                    # print(f"[get_time_range] 单点数据，padding 60s")
+                    padding = 60
+                else:
+                    # print(f"[get_time_range] 多点数据，padding 5%")
+                    padding = (actual_max_ts - actual_min_ts) * 0.05
+                
+                # print(f"[get_time_range] 默认范围: min={actual_min_ts - padding}, max={actual_max_ts + padding}")
+                return actual_min_ts - padding, actual_max_ts + padding
 
-            return min_ts - padding, max_ts + padding
         except Exception as e:
-            # 出现任何错误都返回当前时间范围
             now = time.time()
             print(f"[InterestMonitor] 获取时间范围时出错: {e}")
             traceback.print_exc()
-            return now - 3600, now + 60
+            if force_recent_timespan_seconds:
+                return now - force_recent_timespan_seconds, now
+            return now - 3600, now + 60 # 默认回溯1小时

@@ -36,81 +36,90 @@ def show_snackbar(page: Optional[ft.Page], message: str, error: bool = False):
 
 
 def run_script(script_path: str, page: Optional["ft.Page"], app_state: Optional["AppState"], is_python: bool = False):
-    """Runs a script file (.bat or .py) in a new process/window."""
-    if not app_state or not app_state.script_dir:
-        print("[run_script] Error: AppState or script_dir not available.", flush=True)
+    """运行脚本文件(.bat或.py)，根据bot.py的目录位置来确定脚本位置。"""
+    if not app_state:
+        print("[run_script] Error: AppState not available.", flush=True)
+        if page:
+            show_snackbar(page, "错误：AppState不可用", error=True)
+        return
+
+    # 优先使用bot_base_dir作为脚本目录
+    script_dir = None
+    if hasattr(app_state, 'bot_base_dir') and app_state.bot_base_dir:
+        script_dir = str(app_state.bot_base_dir)
+        print(f"[run_script] 使用bot_base_dir作为脚本目录: {script_dir}", flush=True)
+    elif hasattr(app_state, 'script_dir') and app_state.script_dir:
+        script_dir = app_state.script_dir
+        print(f"[run_script] 使用script_dir作为脚本目录: {script_dir}", flush=True)
+    else:
+        print("[run_script] Error: 无法确定脚本目录。", flush=True)
         if page:
             show_snackbar(page, "错误：无法确定脚本目录", error=True)
         return
 
-    # Construct the full path to the script
-    full_script_path = os.path.join(app_state.script_dir, script_path)
-    print(f"[run_script] Attempting to run: {full_script_path}", flush=True)
+    # 构建脚本的完整路径
+    full_script_path = os.path.join(script_dir, script_path)
+    print(f"[run_script] 尝试运行: {full_script_path}", flush=True)
 
     try:
         if not os.path.exists(full_script_path):
-            print(f"[run_script] Error: Script file not found: {full_script_path}", flush=True)
+            print(f"[run_script] Error: 脚本文件未找到: {full_script_path}", flush=True)
             if page:
-                show_snackbar(page, f"错误：脚本文件未找到\\n{script_path}", error=True)
+                show_snackbar(page, f"错误：脚本文件未找到\n{script_path}", error=True)
             return
 
-        # --- Platform-specific execution --- #
+        # --- 平台特定执行 --- #
         if sys.platform == "win32":
             if script_path.lower().endswith(".bat"):
-                print("[run_script] Using 'start cmd /k' for .bat on Windows.", flush=True)
-                # Use start cmd /k to keep the window open after script finishes
-                subprocess.Popen(f'start cmd /k "{full_script_path}"', shell=True, cwd=app_state.script_dir)
+                print("[run_script] 在Windows上使用'start cmd /k'运行.bat文件。", flush=True)
+                # 使用start cmd /k保持脚本结束后窗口打开
+                subprocess.Popen(f'start cmd /k "{full_script_path}"', shell=True, cwd=script_dir)
             elif script_path.lower().endswith(".py"):
-                print("[run_script] Using Python executable for .py on Windows.", flush=True)
-                # Run Python script using the current interpreter in a new console window
-                # Using sys.executable ensures the correct Python environment is used.
-                # 'start' is a cmd command, so shell=True is needed.
-                # We don't use /k here, the Python process itself will keep the window open if needed (e.g., input()).
+                print("[run_script] 在Windows上使用Python解释器运行.py文件。", flush=True)
+                # 使用当前解释器在新控制台窗口运行Python脚本
+                # 使用sys.executable确保使用正确的Python环境
                 subprocess.Popen(
                     f'start "Running {script_path}" "{sys.executable}" "{full_script_path}"',
                     shell=True,
-                    cwd=app_state.script_dir,
+                    cwd=script_dir,
                 )
             else:
                 print(
-                    f"[run_script] Attempting generic 'start' for unknown file type on Windows: {script_path}",
+                    f"[run_script] 在Windows上尝试使用'start'运行未知类型文件: {script_path}",
                     flush=True,
                 )
-                # Try generic start for other file types, might open associated program
-                subprocess.Popen(f'start "{full_script_path}"', shell=True, cwd=app_state.script_dir)
+                # 尝试对其他文件类型使用通用start，可能会打开关联的程序
+                subprocess.Popen(f'start "{full_script_path}"', shell=True, cwd=script_dir)
         else:  # Linux/macOS
             if script_path.lower().endswith(".py"):
-                print("[run_script] Using Python executable for .py on non-Windows.", flush=True)
-                # On Unix-like systems, we typically need a terminal emulator to see output.
-                # This example uses xterm, adjust if needed for other terminals (gnome-terminal, etc.)
-                # The '-e' flag is common for executing a command.
+                print("[run_script] 在非Windows上使用Python解释器运行.py文件。", flush=True)
+                # 在类Unix系统上，我们通常需要终端模拟器来查看输出
                 try:
-                    subprocess.Popen(["xterm", "-e", sys.executable, full_script_path], cwd=app_state.script_dir)
+                    subprocess.Popen(["xterm", "-e", sys.executable, full_script_path], cwd=script_dir)
                 except FileNotFoundError:
                     print(
-                        "[run_script] xterm not found. Trying to run Python directly (output might be lost).",
+                        "[run_script] 未找到xterm。尝试直接运行Python（输出可能会丢失）。",
                         flush=True,
                     )
                     try:
-                        subprocess.Popen([sys.executable, full_script_path], cwd=app_state.script_dir)
+                        subprocess.Popen([sys.executable, full_script_path], cwd=script_dir)
                     except Exception as e_direct:
-                        print(f"[run_script] Error running Python script directly: {e_direct}", flush=True)
+                        print(f"[run_script] 直接运行Python脚本时出错: {e_direct}", flush=True)
                         if page:
                             show_snackbar(page, f"运行脚本时出错: {e_direct}", error=True)
                         return
-            elif os.access(full_script_path, os.X_OK):  # Check if it's executable
-                print("[run_script] Running executable script directly on non-Windows.", flush=True)
-                # Similar terminal issue might apply here if it's a console app
+            elif os.access(full_script_path, os.X_OK):  # 检查是否可执行
+                print("[run_script] 在非Windows上直接运行可执行脚本。", flush=True)
                 try:
-                    subprocess.Popen([full_script_path], cwd=app_state.script_dir)
+                    subprocess.Popen([full_script_path], cwd=script_dir)
                 except Exception as e_exec:
-                    print(f"[run_script] Error running executable script: {e_exec}", flush=True)
+                    print(f"[run_script] 运行可执行脚本时出错: {e_exec}", flush=True)
                     if page:
                         show_snackbar(page, f"运行脚本时出错: {e_exec}", error=True)
                     return
             else:
                 print(
-                    f"[run_script] Don't know how to run non-executable, non-python script on non-Windows: {script_path}",
+                    f"[run_script] 不知道如何在非Windows上运行非可执行、非python脚本: {script_path}",
                     flush=True,
                 )
                 if page:
@@ -121,6 +130,6 @@ def run_script(script_path: str, page: Optional["ft.Page"], app_state: Optional[
             show_snackbar(page, f"正在尝试运行脚本: {script_path}")
 
     except Exception as e:
-        print(f"[run_script] Unexpected error running script '{script_path}': {e}", flush=True)
+        print(f"[run_script] 运行脚本'{script_path}'时发生意外错误: {e}", flush=True)
         if page:
             show_snackbar(page, f"运行脚本时发生意外错误: {e}", error=True)

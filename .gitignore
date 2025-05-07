@@ -1,5 +1,6 @@
 data/
 data1/
+dist_pyins/
 mongodb/
 NapCat.Framework.Windows.Once/
 log/

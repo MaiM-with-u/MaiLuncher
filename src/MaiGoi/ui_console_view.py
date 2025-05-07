@@ -20,30 +20,29 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
     
     # 获取或创建输出列表视图
     output_list_view = app_state.output_list_view
-    interest_monitor = app_state.interest_monitor_control
-    if not output_list_view:
-        output_list_view = ft.ListView(
-            expand=True,
-            spacing=2,
-            auto_scroll=app_state.is_auto_scroll_enabled,
-            padding=5
-        )
-        app_state.output_list_view = output_list_view
-        print("[控制台视图] 创建了备用ListView")
-
-    # 获取或创建兴趣监控器实例
-    if not interest_monitor:
+    # Ensure auto_scroll is set according to app_state, as it might have been changed elsewhere
+    # or if the ListView was just initialized in AppState with a default.
+    output_list_view.auto_scroll = app_state.is_auto_scroll_enabled
+    
+    # --- Interest Monitor ---
+    # 检查 app_state 中是否已经有 interest_monitor_control
+    if not app_state.interest_monitor_control:
         print("[控制台视图] 创建新的InterestMonitorDisplay实例")
-        interest_monitor = InterestMonitorDisplay()
-        app_state.interest_monitor_control = interest_monitor
+        # 在创建 InterestMonitorDisplay 实例时，传递 app_state
+        app_state.interest_monitor_control = InterestMonitorDisplay()
         
-        # 设置日志路径，使用bot_base_dir
+        # 设置日志路径 (如果需要，并且 app_state.bot_base_dir 可用)
         if hasattr(app_state, 'bot_base_dir') and app_state.bot_base_dir:
-            print(f"[控制台视图] 设置兴趣监控日志路径: {app_state.bot_base_dir}")
-            interest_monitor.set_log_path(app_state.bot_base_dir)
+            log_dir_path = str(app_state.bot_base_dir)
+            # InterestMonitorDisplay 的 set_log_path 期望的是 interest_history.log 所在的目录
+            # 即 bot_base_dir 本身，因为 set_log_path 内部会拼接 "logs/interest/interest_history.log"
+            app_state.interest_monitor_control.set_log_path(log_dir_path)
+            print(f"[控制台视图] 设置兴趣监控日志路径到: {log_dir_path}")
         else:
-            print("[控制台视图] 警告: 无法设置兴趣监控日志路径，app_state.bot_base_dir未定义")
-
+            print("[控制台视图] 警告: bot_base_dir 未在 app_state 中设置，无法配置兴趣监控日志路径。")
+            
+    interest_monitor_section = app_state.interest_monitor_control
+    
     # --- 为控制台输出和兴趣监控创建容器，以便动态调整大小 --- #
     output_container = ft.Container(
         content=output_list_view,
@@ -52,7 +51,7 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
     )
 
     monitor_container = ft.Container(
-        content=interest_monitor,
+        content=interest_monitor_section,
         expand=4,  # 在左侧 Column 内部分配比例
     )
 
@@ -72,49 +71,24 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
         monitor_container.update()
 
     # 为监控器设置回调函数
-    interest_monitor.on_toggle = on_monitor_toggle
+    interest_monitor_section.on_toggle = on_monitor_toggle
 
-    # --- Auto-scroll toggle button callback (remains separate) --- #
-    # 自动滚动切换按钮回调函数 (保持独立)
     def toggle_auto_scroll(e):
-        # Toggle auto-scroll state
         # 切换自动滚动状态
         app_state.is_auto_scroll_enabled = not app_state.is_auto_scroll_enabled
         
-        # Get list view reference and update its auto-scroll setting
-        # 获取列表视图引用并更新其自动滚动设置
-        lv = app_state.output_list_view  # Get potentially updated list view / 获取可能已更新的列表视图
-        if lv:
+        # 更新列表视图设置
+        if lv := app_state.output_list_view:
             lv.auto_scroll = app_state.is_auto_scroll_enabled
+            app_state.manual_viewing = not app_state.is_auto_scroll_enabled
 
-            # When disabling auto-scroll, record current scroll position
-            # 当关闭自动滚动时，记录当前滚动位置
-            if not app_state.is_auto_scroll_enabled:
-                # Mark view in manual viewing mode to maintain position during updates
-                # 标记视图为手动观看模式，以便在更新时保持位置
-                app_state.manual_viewing = True
-            else:
-                # When enabling auto-scroll, disable manual viewing mode
-                # 开启自动滚动时，关闭手动观看模式
-                app_state.manual_viewing = False
-
-        # Update button text display
-        # 更新按钮文本显示
-        text_control = e.control.data if isinstance(e.control.data, ft.Text) else None
-        if text_control:
-            text_control.value = "自动滚动 开" if app_state.is_auto_scroll_enabled else "自动滚动 关"
-        else:
-            print("[toggle_auto_scroll] Warning: Could not find Text control in button data.")
-            # 警告：无法在按钮数据中找到文本控件
-
-        # Update tooltip and log status
-        # 更新工具提示并记录状态
-        e.control.tooltip = "切换控制台自动滚动"  # Toggle console auto-scroll / 切换控制台自动滚动
-        print(f"Auto-scroll {'enabled' if app_state.is_auto_scroll_enabled else 'disabled'}.", flush=True)
+        # 更新按钮文本
+        if isinstance(e.control.data, ft.Text):
+            e.control.data.value = "自动滚动 开" if app_state.is_auto_scroll_enabled else "自动滚动 关"
         
-        # Refresh button UI
-        # 刷新按钮UI
-        e.control.update()  # Try updating only the container first / 先尝试仅更新容器
+        # 更新UI
+        e.control.tooltip = "切换控制台自动滚动"
+        e.control.update()
         
     
 

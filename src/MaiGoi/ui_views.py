@@ -6,7 +6,20 @@ import sys
 
 if TYPE_CHECKING:
     from .state import AppState
-
+    
+# 背景色调
+BG_LIGHT_COLOR = ft.Colors.with_opacity(0.65, ft.Colors.PRIMARY_CONTAINER)
+# 文本颜色
+TEXT_COLOR = ft.Colors.ON_SURFACE
+TEXT_LIGHT_COLOR = ft.Colors.with_opacity(0.7, ft.Colors.ON_SURFACE)
+TEXT_INVERSE_COLOR = ft.Colors.WHITE
+# 卡片颜色
+CARD_BG_COLOR = ft.Colors.SURFACE
+CARD_SHADOW_COLOR = ft.Colors.with_opacity(0.2, ft.Colors.BLACK87)
+# 按钮颜色
+SIMPLE_BUTTON_COLOR = ft.Colors.ON_PRIMARY
+SIMPLE_BUTTON_HOVER_COLOR = ft.Colors.PRIMARY    
+    
 
 # --- 添加资源路径处理函数 ---
 def get_asset_path(relative_path: str) -> str:
@@ -27,16 +40,8 @@ def get_asset_path(relative_path: str) -> str:
 
         # 尝试多种可能的路径
         possible_paths = [
-            # 1. 直接在根目录下
             os.path.join(base_dir, os.path.basename(relative_path)),
-            # 2. 保持原始相对路径结构
-            # os.path.join(base_dir, relative_path),
-            # 3. 在 _internal 目录下保持原始路径结构
             os.path.join(base_dir, "_internal", relative_path),
-            # 4. 从路径中去掉 "src/" 部分
-            # os.path.join(base_dir, relative_path.replace("src/", "", 1)),
-            # 5. 只使用最后的文件名
-            # os.path.join(base_dir, os.path.basename(relative_path)),
         ]
 
         # 尝试所有可能的路径
@@ -74,14 +79,14 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
     card_shadow = ft.BoxShadow(
         spread_radius=1,
         blur_radius=10,  # Slightly more blur for frosted effect
-        color=ft.colors.with_opacity(0.2, ft.colors.BLACK87),
+        color=CARD_SHADOW_COLOR,
         offset=ft.Offset(1, 2),
     )
     # card_border = ft.border.all(1, ft.colors.with_opacity(0.5, ft.colors.SECONDARY)) # Optional: Remove border for cleaner glass look
     card_radius = ft.border_radius.all(4)  # Slightly softer edges for glass
     # card_bgcolor = ft.colors.with_opacity(0.05, ft.colors.BLUE_GREY_50) # Subtle background
     # Use a semi-transparent primary color for the frosted glass effect
-    _card_bgcolor = ft.colors.with_opacity(0.65, ft.colors.PRIMARY_CONTAINER)  # Example: using theme container color
+    _card_bgcolor = BG_LIGHT_COLOR  # 使用自定义颜色
 
     # --- Card Creation Function --- #
     def create_action_card(
@@ -96,22 +101,9 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
     ):
         # Removed icon parameter usage
         subtitle_text = subtitle
-        # darker_bgcolor ='#ffffff' # Default Light mode background
-
-        # --- Determine colors based on theme ---
-        # is_dark = page.theme_mode == ft.ThemeMode.DARK
-        # card_bgcolor_actual = ft.colors.BLACK if is_dark else '#ffffff' # Use BLACK for dark, white for light
-        # main_text_color = ft.colors.GREY_200 if is_dark else ft.colors.BLACK # Light grey for dark, black for light
-        # subtitle_color = ft.colors.GREY_500 if is_dark else ft.colors.with_opacity(0.7, ft.colors.GREY_500) # Darker grey for dark, lighter grey for light
-
-        # --- Use Theme Colors Instead ---
-        # Let Flet handle the color adaptation based on theme
-        # card_bgcolor_theme = ft.colors.SURFACE_VARIANT # Or PRIMARY_CONTAINER, SURFACE etc.
-        # main_text_color_theme = ft.colors.ON_SURFACE_VARIANT
-        # subtitle_color_theme = ft.colors.with_opacity(0.8, ft.colors.ON_SURFACE_VARIANT) # Slightly transparent
-        card_bgcolor_theme = ft.colors.SURFACE  # Use SURFACE for a generally whiter/lighter background
-        main_text_color_theme = ft.colors.ON_SURFACE  # Corresponding text color
-        subtitle_color_theme = ft.colors.with_opacity(0.7, ft.colors.ON_SURFACE)  # Slightly more transparent ON_SURFACE
+        card_bgcolor_theme = CARD_BG_COLOR  # 使用自定义颜色
+        main_text_color_theme = TEXT_COLOR  # 使用自定义颜色
+        subtitle_color_theme = TEXT_LIGHT_COLOR  # 使用自定义颜色
 
         # --- 使用辅助函数获取Emoji图片路径 --- #
         emoji_image_path = get_asset_path("src/MaiGoi/assets/button_shape.png")  # 使用辅助函数获取正确路径
@@ -258,48 +250,25 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
         on_click_handler=lambda _: page.go("/console"),
         tooltip="打开 Bot 控制台视图 (在此启动 Bot)",
     )
-    # Note: We are not using app_state.start_bot_button directly here anymore
-    # The button state update logic in process_manager might need adjustment
-    # if we want this card's appearance to change (e.g., text to "返回控制台").
-    # For now, it will always show "启动".
 
     # --- Define Popup Menu Items --- #
     menu_items = [
-        # ft.PopupMenuItem(
-        #     text="麦麦学习",
-        #     on_click=lambda _: run_script("start_lpmm.bat", page, app_state),
-        # ),
         ft.PopupMenuItem(
             text="人格生成（测试版）",
             on_click=lambda _: run_script("start_personality.bat", page, app_state),
         ),
-        # Add more items here if needed in the future
     ]
-
-    # --- Create "More..." Card Separately for Stack --- #
-    # more_options_card = create_action_card(
-    #     page=page,
-    #     icon=ft.icons.MORE_HORIZ_OUTLINED,
-    #     text="更多...",
-    #     subtitle="其他工具",
-    #     on_click_handler=None,  # 这里不设置点击动作，因为我们会覆盖内容
-    #     tooltip="选择要运行的脚本",
-    #     width=300,
-    #     height=100,
-    # )
 
     # 创建一个包含 more_options_card 和 PopupMenuButton 的 Stack
     more_options_card_stack = ft.Container(
         content=ft.Stack(
             [
-                # more_options_card,  # 作为背景卡片
-                # 将 PopupMenuButton 放在卡片上层
                 ft.Container(
                     content=ft.PopupMenuButton(
                         items=menu_items,
                         icon=ft.icons.MORE_VERT,
                         icon_size=50,
-                        icon_color=ft.colors.ORANGE,
+                        icon_color=ft.Colors.PRIMARY,  # 使用自定义颜色
                         tooltip="选择要运行的脚本",
                     ),
                     right=50,  # 右侧距离
@@ -380,12 +349,10 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                 [
                     # --- Giant Orange Stripe (Background) --- #
                     ft.Container(
-                        bgcolor=ft.colors.with_opacity(1, ft.colors.ORANGE_ACCENT_200),  # Orange with opacity
+                        bgcolor=ft.Colors.TERTIARY,  # 使用自定义颜色
                         width=3000,  # Make it very wide
                         height=1000,  # Give it substantial height
-                        rotate=ft.transform.Rotate(0.12),  # Apply rotation (adjust angle as needed)
-                        # alignment=ft.alignment.center, # Center it in the stack
-                        # Position it manually to better control placement with rotation
+                        rotate=ft.transform.Rotate(0.12), 
                         left=-200,
                         top=-500,
                         opacity=1,  # Overall opacity for the stripe
@@ -404,24 +371,20 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,  # Helps with rounded corners
                     ),
                     ft.Container(
-                        bgcolor=ft.colors.with_opacity(1, ft.colors.ORANGE_ACCENT_200),  # Orange with opacity
+                        bgcolor=ft.Colors.TERTIARY,  # 使用自定义颜色
                         width=1000,  # Make it very wide
                         height=1000,  # Give it substantial height
-                        rotate=ft.transform.Rotate(0.12),  # Apply rotation (adjust angle as needed)
-                        # alignment=ft.alignment.center, # Center it in the stack
-                        # Position it manually to better control placement with rotation
+                        rotate=ft.transform.Rotate(0.12), 
                         left=280,
                         top=-561.6,
                         opacity=1,  # Overall opacity for the stripe
                     ),
                     # --- End Giant Orange Stripe ---
                     ft.Container(
-                        bgcolor=ft.colors.with_opacity(1, ft.colors.PURPLE_200),  # Orange with opacity
+                        bgcolor=ft.Colors.SECONDARY,  # 使用自定义颜色
                         width=800,  # Make it very wide
                         height=3000,  # Give it substantial height
-                        rotate=ft.transform.Rotate(0.6),  # Apply rotation (adjust angle as needed)
-                        # alignment=ft.alignment.center, # Center it in the stack
-                        # Position it manually to better control placement with rotation
+                        rotate=ft.transform.Rotate(0.6),  
                         left=-500,
                         top=-1600,
                         opacity=1,  # Overall opacity for the stripe
@@ -469,8 +432,7 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                 expand=True,  # Make Stack fill the available space
             ),
         ],
-        # padding=ft.padding.symmetric(horizontal=20), # <-- 移除水平 padding
-        # scroll=ft.ScrollMode.ADAPTIVE,  # Allow scrolling if content overflows
+        bgcolor=ft.Colors.INVERSE_SURFACE,  # 使用自定义颜色
     )
 
 
@@ -561,9 +523,17 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 )
             )
-        # Trigger update if the list view is part of the page
-        if adapters_list_view.page:
-            adapters_list_view.update()
+        
+        # 安全地更新UI - 添加判断确保控件已添加到页面
+        print("[Adapters] 更新适配器列表，当前适配器数量:", len(app_state.adapter_paths))
+        try:
+            # 检查控件是否已添加到页面
+            if adapters_list_view.page:
+                adapters_list_view.update()
+            else:
+                print("[Adapters] 列表视图尚未添加到页面，跳过update调用")
+        except Exception as e:
+            print(f"[Adapters] 更新列表视图时出错: {e}")
 
     def remove_adapter(e):
         """Removes an adapter path based on the button's data (index)."""
@@ -577,12 +547,13 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
             
             if save_config(app_state.gui_config, base_dir=app_state.bot_base_dir):
                 # 验证配置一致性
-                from ..config_manager import verify_config_consistency
+                from .config_manager import verify_config_consistency
                 results = verify_config_consistency()
                 print("[Adapters] 移除后配置一致性验证结果:")
                 for name, path, exists in results:
                     print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
                 
+                # 立即更新列表视图
                 update_adapters_list()
                 show_snackbar(page, f"已移除: {removed_path}")
             else:
@@ -661,7 +632,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
     if app_state.file_picker:
         app_state.file_picker.on_result = pick_adapter_file_result
     else:
-        # This case shouldn't happen if launcher.py runs correctly
+        # This case shouldn't happen if main.py runs correctly
         print("[create_adapters_view] Warning: FilePicker not available during view creation.")
 
     def add_adapter(e):
@@ -701,7 +672,7 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
         print(f"[Adapters] 保存配置结果: {'成功' if save_successful else '失败'}")
         
         # 验证配置一致性
-        from ..config_manager import verify_config_consistency
+        from .config_manager import verify_config_consistency
         results = verify_config_consistency()
         print("[Adapters] 保存后配置一致性验证结果:")
         for name, path, exists in results:
@@ -709,7 +680,8 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
 
         if save_successful:
             new_adapter_path_field.value = ""  # Clear input field
-            update_adapters_list()  # Update the list view
+            # 立即更新列表视图
+            update_adapters_list()
             new_adapter_path_field.update()  # Update the input field visually
             show_snackbar(page, "适配器已添加")
         else:
@@ -772,13 +744,13 @@ def create_process_output_view(page: ft.Page, app_state: "AppState", process_id:
     # Import stop function
     from .process_manager import stop_managed_process
 
-    print(f"[Create Output View] 创建进程输出视图: {process_id}")
-    process_state = app_state.managed_processes.get(process_id)
+    print(f"[Create Output View] 构建适配器输出视图: {process_id}")
 
     # 定义自定义返回函数
     def handle_back_button(_):
         page.go("/adapters")  # 返回适配器列表页面
 
+    process_state = app_state.managed_processes.get(process_id)
     if not process_state:
         print(f"[Create Output View] 错误: 未找到进程状态: ID={process_id}")
         
@@ -859,38 +831,94 @@ def create_process_output_view(page: ft.Page, app_state: "AppState", process_id:
 
     output_lv = process_state.output_list_view
 
-    # --- Stop Button --- #
+    # --- AppBar reference --- #
+    app_bar_title_ref = ft.Ref[ft.Text]()
+
+    # --- Button Actions & UI Update Logic --- #
+    def _update_app_bar_and_buttons(current_page: ft.Page, current_app_bar: ft.AppBar):
+        # Re-fetch the latest process state
+        latest_process_state = app_state.managed_processes.get(process_id)
+        if not latest_process_state:
+            # This case should ideally not happen if process_id is valid
+            print(f"[Adapter View Update] Warning: process_state for {process_id} not found during update.")
+            return
+
+        is_now_running = latest_process_state.status == "running" and latest_process_state.pid and psutil.pid_exists(latest_process_state.pid)
+        new_status_text = "运行中" if is_now_running else "已停止"
+        
+        # Update AppBar Title
+        if app_bar_title_ref.current:
+            app_bar_title_ref.current.value = f"输出: {latest_process_state.display_name} ({new_status_text})"
+
+        # Create new action button based on current state
+        new_action_button = None
+        if is_now_running:
+            new_action_button = ft.ElevatedButton(
+                "停止进程",
+                icon=ft.icons.STOP_CIRCLE_OUTLINED,
+                on_click=do_stop_and_refresh, 
+                bgcolor=ft.colors.with_opacity(0.6, ft.colors.RED_ACCENT_100),
+                color=ft.colors.WHITE,
+                tooltip=f"停止 {latest_process_state.display_name}",
+            )
+        else:
+            new_action_button = ft.ElevatedButton(
+                "重新启动",
+                icon=ft.icons.PLAY_ARROW,
+                on_click=do_start_and_refresh, 
+                bgcolor=ft.colors.with_opacity(0.6, ft.colors.GREEN_ACCENT_100),
+                color=ft.colors.WHITE,
+                tooltip=f"重新启动 {latest_process_state.display_name}",
+            )
+        
+        # The AppBar's `actions` list is [action_button, auto_scroll_button, ft.Container(width=5)]
+        # We only need to replace the action_button (at index 0).
+        current_actions = list(current_app_bar.actions) 
+        if current_actions: # Should always be true if initialized correctly
+            current_actions[0] = new_action_button 
+            current_app_bar.actions = current_actions
+        else:
+            # Fallback, though this indicates an issue with initial AppBar setup
+            current_app_bar.actions = [new_action_button, ft.Container(width=5)]
+
+        current_app_bar.update()
+
+    # Button click handlers
+    def do_stop_and_refresh(_):
+        stop_managed_process(process_id, page, app_state)
+        _update_app_bar_and_buttons(page, view_app_bar)
+
+    def do_start_and_refresh(_):
+        start_adapter_from_view(process_state.script_path, page, app_state, process_id)
+        _update_app_bar_and_buttons(page, view_app_bar)
+
+    # Determine initial state for button creation
     is_running = process_state.status == "running" and process_state.pid and psutil.pid_exists(process_state.pid)
+    initial_status_text = "运行中" if is_running else "已停止"
     
-    button_list = []
-    
+    action_button = None
     if is_running:
-        # 如果正在运行，添加停止按钮
-        stop_button = ft.ElevatedButton(
+        action_button = ft.ElevatedButton(
             "停止进程",
             icon=ft.icons.STOP_CIRCLE_OUTLINED,
-            on_click=lambda _: stop_managed_process(process_id, page, app_state),
+            on_click=do_stop_and_refresh, 
             bgcolor=ft.colors.with_opacity(0.6, ft.colors.RED_ACCENT_100),
             color=ft.colors.WHITE,
             tooltip=f"停止 {process_state.display_name}",
         )
-        button_list.append(stop_button)
     else:
-        # 如果未运行，添加启动按钮
-        start_button = ft.ElevatedButton(
+        action_button = ft.ElevatedButton(
             "重新启动",
             icon=ft.icons.PLAY_ARROW,
-            on_click=lambda _: start_adapter_from_view(process_state.script_path, page, app_state, process_id),
+            on_click=do_start_and_refresh, 
             bgcolor=ft.colors.with_opacity(0.6, ft.colors.GREEN_ACCENT_100),
             color=ft.colors.WHITE,
             tooltip=f"重新启动 {process_state.display_name}",
         )
-        button_list.append(start_button)
 
     # --- Auto-scroll Toggle (Specific to this view) --- #
-    # Create a local state for this view's scroll toggle
     is_this_view_auto_scroll = ft.Ref[bool]()
-    is_this_view_auto_scroll.current = True  # Default to true
+    is_this_view_auto_scroll.current = True 
     output_lv.auto_scroll = is_this_view_auto_scroll.current
 
     def toggle_this_view_auto_scroll(e):
@@ -902,30 +930,29 @@ def create_process_output_view(page: ft.Page, app_state: "AppState", process_id:
 
     auto_scroll_button = ft.OutlinedButton(
         "自动滚动 开" if is_this_view_auto_scroll.current else "自动滚动 关",
-        # icon=ft.icons.SCROLLING,
-        icon=ft.icons.SWAP_VERT,  # Use a valid icon for toggling
+        icon=ft.icons.SWAP_VERT, 
         on_click=toggle_this_view_auto_scroll,
         tooltip="切换此视图的自动滚动",
     )
     
-    button_list.append(auto_scroll_button)
+    button_list_for_appbar = [action_button, auto_scroll_button, ft.Container(width=5)]
 
-    status_text = "已停止"
-    if is_running:
-        status_text = "运行中"
-
-    return ft.View(
-        route=f"/adapters/{process_id}",  # Dynamic route
-        appbar=ft.AppBar(
-            title=ft.Text(f"输出: {process_state.display_name} ({status_text})"),
+    # Create the AppBar instance here so we can pass it to the update function
+    view_app_bar = ft.AppBar(
+            ref=ft.Ref[ft.AppBar](), # Optional: give AppBar a ref if needed elsewhere
+            title=ft.Text(f"输出: {process_state.display_name} ({initial_status_text})", ref=app_bar_title_ref),
             bgcolor=ft.colors.SURFACE_VARIANT,
             leading=ft.IconButton(icon=ft.icons.ARROW_BACK, on_click=handle_back_button),
             leading_width=40,
             automatically_imply_leading=False,
-            actions=button_list + [ft.Container(width=5)],  # 添加间隔
-        ),
+            actions=button_list_for_appbar,
+        )
+
+    return ft.View(
+        route=f"/adapters/{process_id}",
+        appbar=view_app_bar, # Use the created AppBar instance
         controls=[
-            output_lv  # Display the specific ListView for this process
+            output_lv 
         ],
         padding=0,
     )
