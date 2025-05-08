@@ -1,12 +1,16 @@
 import flet as ft
 import tomlkit
 from pathlib import Path
+import webbrowser  # 添加导入webbrowser模块用于打开网页
+from typing import Dict, Any
 
 from .state import AppState
 from .utils import show_snackbar  # Assuming show_snackbar is in utils
 from .toml_form_generator import create_toml_form, load_bot_config, get_bot_config_path
 from .config_manager import load_config, save_config
 from .ui_env_editor import create_env_editor_page_content
+from .db_connector import full_database_reset # 修改导入
+from .mmc_downloader import show_mmc_downloader  # 添加导入新模块
 
 
 def save_bot_config(page: ft.Page, app_state: AppState, new_config_data: dict):
@@ -74,12 +78,175 @@ def save_gui_config_changes(page: ft.Page, app_state: AppState, silent: bool = F
         print("[Settings] Error during silent save of GUI Config.")
 
 
+def load_config_metadata(app_state: AppState) -> dict:
+    """加载配置元数据文件"""
+    try:
+        # 获取bot.py所在目录
+        bot_dir = Path(app_state.mmc_path)
+        meta_path = bot_dir / "template" / "bot_config_meta.toml"
+        
+        print(f"[Settings] 尝试加载元数据文件: {meta_path}")
+        
+        if not meta_path.exists():
+            print(f"[Settings] 警告: 未找到配置元数据文件: {meta_path}")
+            return {}
+            
+        with open(meta_path, "r", encoding="utf-8") as f:
+            metadata = tomlkit.load(f)
+            print(f"[Settings] 成功加载配置元数据文件，包含 {len(metadata)} 个顶级键")
+            return metadata
+    except Exception as e:
+        print(f"[Settings] 加载配置元数据文件时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+
+def create_important_settings_card(page: ft.Page, config_data: Dict[str, Any], config_metadata: Dict[str, Any]) -> ft.Card:
+    """创建重要设置卡片"""
+    important_items = []
+    print(f"[Settings] 开始创建重要设置卡片，配置数据: {config_data}")
+    print(f"[Settings] 元数据: {config_metadata}")
+    
+    def get_metadata_for_path(path: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """递归查找路径对应的元数据"""
+        parts = path.split(".")
+        current = metadata
+        
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part, {})
+            else:
+                return {}
+                
+        return current if isinstance(current, dict) else {}
+    
+    def process_section(section_data: Dict[str, Any], section_path: str = ""):
+        """递归处理配置部分，收集重要项"""
+        for key, value in section_data.items():
+            full_path = f"{section_path}.{key}" if section_path else key
+            print(f"[Settings] 处理配置项: {full_path}")
+            
+            # 获取元数据
+            metadata = get_metadata_for_path(full_path, config_metadata)
+            print(f"[Settings] 项 {full_path} 的元数据: {metadata}")
+            
+            # 检查当前项是否重要
+            is_important = metadata.get("important", False)
+            if is_important:
+                print(f"[Settings] 找到重要项: {full_path}")
+                # 获取描述
+                describe = metadata.get("describe", "")
+                # 创建控件
+                if isinstance(value, bool):
+                    control = ft.Switch(
+                        label=key,
+                        value=value,
+                        disabled=not metadata.get("can_edit", True),
+                    )
+                elif isinstance(value, (int, float)):
+                    control = ft.TextField(
+                        label=key,
+                        value=str(value),
+                        disabled=not metadata.get("can_edit", True),
+                    )
+                elif isinstance(value, str):
+                    control = ft.TextField(
+                        label=key,
+                        value=value,
+                        disabled=not metadata.get("can_edit", True),
+                    )
+                elif isinstance(value, list):
+                    # 对于列表类型，显示为逗号分隔的字符串
+                    control = ft.TextField(
+                        label=key,
+                        value=", ".join(str(x) for x in value),
+                        disabled=not metadata.get("can_edit", True),
+                    )
+                else:
+                    print(f"[Settings] 跳过复杂类型: {full_path}")
+                    continue  # 跳过复杂类型
+                
+                # 添加描述文本
+                important_items.append(
+                    ft.Column([
+                        control,
+                        ft.Text(describe, size=12, color=ft.colors.SECONDARY),
+                        ft.Divider()
+                    ])
+                )
+            
+            # 递归处理子部分
+            if isinstance(value, dict):
+                process_section(value, full_path)
+    
+    # 处理配置数据
+    process_section(config_data)
+    print(f"[Settings] 找到 {len(important_items)} 个重要项")
+    
+    # 如果没有重要项，返回空卡片
+    if not important_items:
+        print("[Settings] 没有找到重要项，返回空卡片")
+        return ft.Card(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("没有重要设置项", italic=True)
+                ]),
+                padding=10
+            )
+        )
+    
+    # 创建重要设置卡片
+    print("[Settings] 创建重要设置卡片")
+    return ft.Card(
+        content=ft.Container(
+            content=ft.Column([
+                ft.Text("重要设置", weight=ft.FontWeight.BOLD, size=16),
+                ft.Divider(),
+                *important_items
+            ]),
+            padding=10
+        ),
+        margin=ft.margin.only(bottom=10)
+    )
+
+
 def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
     """Creates the settings view with sections for different config files."""
 
     # --- State for switching between editors ---
     content_area = ft.Column([], expand=True, scroll=ft.ScrollMode.ADAPTIVE)
     current_config_data = {}  # Store loaded data for saving
+    
+    # --- 添加下载MMC和安装Python按钮函数 --- #
+    def download_mmc(e):
+        # 使用新的MMC下载器替代简单的网页打开
+        show_mmc_downloader(page)
+        
+    def install_python(e):
+        # 打开Python安装助手窗口
+        try:
+            import subprocess
+            from pathlib import Path
+            
+            # 获取python_installer.py的绝对路径
+            installer_script = Path(__file__).parent / "python_installer.py"
+            
+            # 启动Python安装助手
+            if installer_script.exists():
+                # 使用系统的python来运行安装助手
+                process = subprocess.Popen(
+                    ["python", str(installer_script)],
+                    shell=True,
+                    # 不需要捕获输出
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                show_snackbar(page, "Python安装助手已启动")
+            else:
+                show_snackbar(page, f"未找到Python安装助手脚本: {installer_script}", error=True)
+        except Exception as ex:
+            show_snackbar(page, f"启动Python安装助手失败: {str(ex)}", error=True)
 
     # --- Function to load Bot config editor (Original TOML editor) ---
     def show_bot_config_editor(e=None):
@@ -94,26 +261,55 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
             current_config_data = current_bot_config # Keep reference if needed elsewhere
             content_area.controls.clear()
 
+            # 加载配置元数据
+            config_metadata = load_config_metadata(app_state)
+            print(f"[Settings] 加载的元数据: {config_metadata}")
+
             # Define the save callback for the bot config
             def bot_save_callback(data_to_save):
                 return save_bot_config_changes(page, data_to_save, app_state, silent=True)
 
-            # Pass the callback to the form generator
+            # 创建一个临时容器来存放表单控件
+            form_container = ft.Column([], expand=True, scroll=ft.ScrollMode.AUTO)
+            
+            # Pass the callback and metadata to the form generator
             form_generator = create_toml_form(
                 page,
                 current_bot_config, # Pass the data directly
-                content_area,
+                form_container,
                 template_filename="bot_config_template.toml",
                 save_callback=bot_save_callback,
-                debounce_interval=1.5 # Optional: slightly longer debounce
+                debounce_interval=1.5, # Optional: slightly longer debounce
+                config_metadata=config_metadata # 传递元数据
             )
-            # No explicit save button needed anymore
-            # save_button = ft.ElevatedButton(...)
-            # content_area.controls.append(ft.Divider())
-            # content_area.controls.append(save_button)
+            
+            # 先创建重要设置卡片
+            important_card = create_important_settings_card(page, current_bot_config, config_metadata)
+            
+            # 将重要设置卡片和表单添加到内容区域
+            if important_card:
+                print("[Settings] 添加重要设置卡片到内容区域")
+                content_area.controls.append(important_card)
+                # 添加一个分隔线
+                content_area.controls.append(ft.Divider())
+                # 添加一个标题
+                content_area.controls.append(
+                    ft.Text("完整配置", weight=ft.FontWeight.BOLD, size=16)
+                )
+                content_area.controls.append(ft.Divider())
+            
+            # 将表单控件添加到内容区域
+            content_area.controls.append(form_container)
+            
+            # 强制更新页面
+            if page:
+                page.update()
+                print("[Settings] 页面已更新")
         except Exception as ex:
             content_area.controls.clear()
             content_area.controls.append(ft.Text(f"加载 Bot 配置时出错: {ex}", color=ft.colors.ERROR))
+            import traceback
+            traceback.print_exc()
         if page:
             page.update()
 
@@ -150,6 +346,16 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
         except Exception as ex:
             content_area.controls.clear()
             content_area.controls.append(ft.Text(f"加载 LPMM 配置时出错: {ex}", color=ft.colors.ERROR))
+        if page:
+            page.update()
+
+    # --- Function to load .env editor ---
+    def show_env_editor(e=None):
+        # No config data to manage here, it handles its own save
+        print("[Settings] Loading .env Editor")
+        content_area.controls.clear()
+        env_editor_content = create_env_editor_page_content(page, app_state)
+        content_area.controls.append(env_editor_content)
         if page:
             page.update()
 
@@ -296,29 +502,30 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     app_state.gui_config["bot_script_path"] = new_path
                     print(f"[Settings] MaiCore 脚本路径已暂存: {new_path}")
                     
-                    # ---- 重要：更新 bot_base_dir ---- #
-                    # 基于新的 bot_script_path 计算 bot_base_dir
+                    # ---- 重要：更新 mmc_path ---- #
+                    # 基于新的 bot_script_path 计算 mmc_path
                     try:
                         bot_script_abs_path = Path(new_path).resolve()
                         if bot_script_abs_path.is_file():
-                            # 新的 bot.py 路径有效，更新 bot_base_dir
-                            app_state.bot_base_dir = bot_script_abs_path.parent
-                            print(f"[Settings] bot_base_dir 已更新: {app_state.bot_base_dir}")
+                            # 新的 bot.py 路径有效，更新 mmc_path
+                            app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
+                            print(f"[Settings] mmc_path 已更新: {app_state.mmc_path}")
                             
-                            # 检查并创建 config 目录
-                            config_dir = app_state.bot_base_dir / "config"
+                            # 检查并创建 config 目录 (基于新的 mmc_path)
+                            config_dir = Path(app_state.mmc_path) / "config"
                             if not config_dir.exists():
                                 try:
                                     config_dir.mkdir(exist_ok=True)
                                     print(f"[Settings] 已创建 config 目录: {config_dir}")
                                 except Exception as e:
                                     print(f"[Settings] 创建 config 目录失败: {e}")
+                            full_database_reset(getattr(app_state, 'db', None)) 
                         else:
-                            # 文件不存在，打印警告但仍然更新 bot_base_dir
-                            print(f"[Settings] 警告: 文件 {bot_script_abs_path} 不存在，但仍使用其父目录作为 bot_base_dir")
-                            app_state.bot_base_dir = bot_script_abs_path.parent
+                            print(f"[Settings] 警告: 文件 {bot_script_abs_path} 不存在，但仍使用其父目录作为 mmc_path")
+                            app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
+                            full_database_reset(getattr(app_state, 'db', None))
                     except Exception as e:
-                        print(f"[Settings] 更新 bot_base_dir 时出错: {e}")
+                        print(f"[Settings] 更新 mmc_path 时出错: {e}")
                     
                     trigger_auto_save() # Auto-save
                     saved = True
@@ -329,9 +536,10 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     app_state.gui_config["bot_script_path"] = "bot.py"
                     bot_script_path_textfield.value = "bot.py" # Update textfield too
                     
-                    # 重置 bot_base_dir 到当前工作目录
-                    app_state.bot_base_dir = Path(".").resolve()
-                    print(f"[Settings] 已重置 bot_base_dir: {app_state.bot_base_dir}")
+                    # 重置 mmc_path 到当前工作目录 (或者一个更合适的默认值)
+                    app_state.mmc_path = str(Path(".").resolve()) # 改为 mmc_path
+                    print(f"[Settings] 已重置 mmc_path: {app_state.mmc_path}")
+                    full_database_reset(getattr(app_state, 'db', None)) 
                     
                     print("[Settings] MaiCore 脚本路径已清除, 恢复默认: bot.py")
                     trigger_auto_save() # Auto-save
@@ -349,26 +557,29 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                 chosen_path = e.files[0].path
                 bot_script_path_textfield.value = chosen_path
                 
-                # 直接更新 bot_base_dir，而不依赖 on_change 事件的处理过程
+                # 直接更新 mmc_path，而不依赖 on_change 事件的处理过程
                 try:
-                    # 计算并更新 bot_base_dir
+                    # 计算并更新 mmc_path
                     bot_script_abs_path = Path(chosen_path).resolve()
                     if bot_script_abs_path.is_file():
-                        app_state.bot_base_dir = bot_script_abs_path.parent
-                        print(f"[Settings] 已直接更新 bot_base_dir: {app_state.bot_base_dir}")
+                        app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
+                        print(f"[Settings] 已直接更新 mmc_path: {app_state.mmc_path}")
                         
-                        # 检查并创建 config 目录
-                        config_dir = app_state.bot_base_dir / "config"
+                        config_dir = Path(app_state.mmc_path) / "config"
                         if not config_dir.exists():
                             try:
                                 config_dir.mkdir(exist_ok=True)
                                 print(f"[Settings] 已创建 config 目录: {config_dir}")
                             except Exception as e:
                                 print(f"[Settings] 创建 config 目录失败: {e}")
+                        full_database_reset(getattr(app_state, 'db', None))
                     else:
-                        print(f"[Settings] 警告: 所选文件 {bot_script_abs_path} 无法访问")
+                        print(f"[Settings] 警告: 所选文件 {bot_script_abs_path} 不存在或无法访问")
+                        app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
+                        print(f"[Settings] 已直接更新 mmc_path (基于可能不存在的文件): {app_state.mmc_path}")
+                        full_database_reset(getattr(app_state, 'db', None))
                 except Exception as e:
-                    print(f"[Settings] 直接更新 bot_base_dir 时出错: {e}")
+                    print(f"[Settings] 直接更新 mmc_path 时出错: {e}")
                 
                 # 触发现有的更改处理逻辑
                 # Trigger the on_change handler to update state and auto-save
@@ -394,13 +605,41 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN
         )
 
-        # --- Save Button (REMOVED) --- #
-        # save_button = ft.ElevatedButton(
-        #     "保存通用设置", icon=ft.icons.SAVE, on_click=lambda _: save_gui_config_changes(page, app_state)
-        # )
+        # --- 添加下载卡片 --- #
+        download_card = ft.Card(
+            content=ft.Container(
+                ft.Column(
+                    [
+                        ft.Text("安装MMC与Python环境", weight=ft.FontWeight.BOLD, size=16),
+                        ft.Row(
+                            [
+                                ft.ElevatedButton(
+                                    "下载MMC", 
+                                    icon=ft.icons.DOWNLOAD,
+                                    on_click=download_mmc,
+                                    tooltip="下载MaiBot-Core (MMC)仓库"
+                                ),
+                                ft.ElevatedButton(
+                                    "安装Python", 
+                                    icon=ft.icons.CODE,
+                                    on_click=install_python,
+                                    tooltip="前往Python官方网站下载安装Python"
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.START,
+                            spacing=10,
+                        ),
+                    ],
+                    spacing=10
+                ),
+                padding=20,
+            ),
+            margin=ft.margin.only(bottom=10)
+        )
 
         content_area.controls.extend(
             [
+                download_card,  # 添加下载卡片
                 ft.Card(
                     content=ft.Container(
                         ft.Column(
@@ -427,20 +666,8 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                         padding=10,
                     )
                 ),
-                # ft.Divider(), # Divider no longer needed before save button
-                # save_button, # Removed save button
             ]
         )
-        if page:
-            page.update()
-
-    # --- Function to load .env editor ---
-    def show_env_editor(e=None):
-        # No config data to manage here, it handles its own save
-        print("[Settings] Loading .env Editor")
-        content_area.controls.clear()
-        env_editor_content = create_env_editor_page_content(page, app_state)
-        content_area.controls.append(env_editor_content)
         if page:
             page.update()
 

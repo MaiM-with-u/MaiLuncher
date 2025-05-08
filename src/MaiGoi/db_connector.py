@@ -39,7 +39,8 @@ def _create_database_instance(mmc_path: Path):
         load_dotenv(dotenv_path=env_file_in_mmc, override=True) # override=True 确保环境变量被更新
         print(f"[DB Connector] 从 {env_file_in_mmc} 加载了 .env 文件")
     else:
-        print(f"[DB Connector] 警告: 在 {env_file_in_mmc} 未找到 .env 文件。将依赖现有环境变量或默认值。")
+        print(f"[DB Connector] 错误: 在 {env_file_in_mmc} 未找到 .env 文件。无法配置数据库连接。")
+        return None # 如果 .env 文件未找到，则不尝试连接
 
     uri = os.getenv("MONGODB_URI")
     host = os.getenv("MONGODB_HOST", "127.0.0.1")
@@ -75,19 +76,25 @@ def get_gui_db(mmc_path: Path, db_name_override: Optional[str] = None) -> Databa
     """
     global _client, _db_instance
 
+    print(f"[DB Connector] get_gui_db 被调用，mmc_path={mmc_path}, _client={_client is not None}")
+
     if _client is None:
         print("[DB Connector] 初始化 MongoDB 客户端...")
         try:
             _client = _create_database_instance(mmc_path)
+            
+            # 检查连接结果
+            if _client is None:
+                print("[DB Connector] 注意: _create_database_instance 返回 None (可能是 .env 不存在)")
+                return None
+                
             # 检查连接是否成功 (可选，但推荐)
             _client.admin.command('ping') # 发送一个ping命令
-            print("[DB Connector] MongoDB 客户端连接成功。")
+            print(f"[DB Connector] MongoDB 客户端连接成功。ID: {id(_client)}")
         except Exception as e:
             print(f"[DB Connector] 错误: 连接 MongoDB 失败: {e}")
             _client = None # 连接失败，重置 client
-            # 可以选择抛出异常或返回 None，这里选择让 _db_instance 为 None
-            # 以便调用方可以检查
-            return None # 或者 raise e
+            return None
 
     if _db_instance is None and _client is not None: # 只有在客户端连接成功后才获取数据库实例
         # 从环境变量获取数据库名称，如果未设置则使用默认名称 "MaiLauncherDB"
@@ -109,45 +116,112 @@ class GUIDBWrapper:
         """
         self._mmc_path_provider = mmc_path_provider
         self._db_instance_internal = None
+        print("[DB Wrapper] 初始化 GUIDBWrapper 实例")
 
     def _get_actual_db(self) -> Database:
-        if self._db_instance_internal is None:
-            mmc_path = self._mmc_path_provider()
-            if not mmc_path:
-                print("[DB Wrapper] 错误: mmc_path 未提供，无法初始化数据库。")
-                return None # 或者抛出异常
-            self._db_instance_internal = get_gui_db(Path(mmc_path))
-        return self._db_instance_internal
+        """获取实际的数据库实例，如果没有则尝试创建。"""
+        # 获取当前的 mmc_path
+        mmc_path = self._mmc_path_provider()
+        if not mmc_path:
+            print("[DB Wrapper] 错误: mmc_path 未提供，无法初始化数据库。")
+            return None
+            
+        print(f"[DB Wrapper] _get_actual_db 调用，当前 mmc_path={mmc_path}, 忽略内部缓存")
+        
+        # 始终尝试新建连接，不使用内部缓存
+        # 这是一种新的更安全的方法，确保即使 full_database_reset 后也能重新连接
+        try:
+            # 直接返回新获取的实例，不存储在 self._db_instance_internal
+            db_instance = get_gui_db(Path(mmc_path))
+            if db_instance is None:
+                print("[DB Wrapper] 注意: get_gui_db 返回 None，可能是因为 .env 不存在或连接失败。")
+            else:
+                print(f"[DB Wrapper] 成功获取数据库实例，ID: {id(db_instance)}")
+            return db_instance
+        except Exception as ex:
+            print(f"[DB Wrapper] 获取数据库实例出错: {ex}")
+            return None
 
     def __getattr__(self, name):
+        """当访问不存在的属性时，尝试从数据库实例获取。"""
         db = self._get_actual_db()
         if db is None:
-            raise AttributeError(f"数据库未初始化或连接失败，无法获取属性 '{name}'")
+            err_msg = f"数据库未初始化或连接失败，无法获取属性 '{name}'"
+            print(f"[DB Wrapper] 错误: {err_msg}")
+            raise AttributeError(err_msg)
         return getattr(db, name)
 
     def __getitem__(self, key):
+        """当使用字典方式访问时，尝试从数据库实例获取集合。"""
         db = self._get_actual_db()
         if db is None:
-            raise KeyError(f"数据库未初始化或连接失败，无法获取集合 '{key}'")
+            err_msg = f"数据库未初始化或连接失败，无法获取集合 '{key}'"
+            print(f"[DB Wrapper] 错误: {err_msg}")
+            raise KeyError(err_msg)
         return db[key]
 
-# 注意：全局数据库访问点 gui_db 的初始化需要 mmc_path。
-# 这通常在 AppState 可用后进行。
-# 因此，我们不在模块级别直接创建 GUIDBWrapper 实例，
-# 而是在 main.py 中，当 AppState 和 mmc_path 可用时创建。
-
-# 例如，在 main.py 中可以这样做：
-# app_state.db = GUIDBWrapper(lambda: app_state.mmc_path)
-# 然后通过 app_state.db.collection_name 访问
+    def reset_connection(self):
+        """重置包装器内部缓存的数据库实例。"""
+        if self._db_instance_internal is not None:
+            print(f"[DB Wrapper] 内部数据库实例缓存已重置，原实例 ID: {id(self._db_instance_internal)}")
+        else:
+            print("[DB Wrapper] 内部数据库实例缓存已重置 (原本就是 None)")
+        self._db_instance_internal = None
 
 def close_db_connection():
     """关闭 MongoDB 客户端连接（如果已打开）。"""
-    global _client
+    global _client, _db_instance
     if _client:
-        print("[DB Connector] 关闭 MongoDB 客户端连接...")
-        _client.close()
-        _client = None
-        _db_instance = None # 清理数据库实例引用
-        print("[DB Connector] MongoDB 客户端连接已关闭。")
+        client_id = id(_client)
+        print(f"[DB Connector] 正在关闭 MongoDB 客户端连接... ID: {client_id}")
+        try:
+            _client.close()
+            print(f"[DB Connector] MongoDB 客户端连接成功关闭，ID: {client_id}")
+        except Exception as e:
+            print(f"[DB Connector] 关闭客户端连接时出错: {e}")
+        finally:
+            _client = None
+            _db_instance = None  
+            print("[DB Connector] 全局客户端和数据库实例引用已清除")
+    else:
+        print("[DB Connector] 没有活动的全局 MongoDB 客户端可关闭")
+
+def full_database_reset(db_wrapper_instance = None):
+    """
+    执行数据库连接的完全重置。
+    关闭全局客户端并重置 GUIDBWrapper (如果提供) 的内部缓存。
+    
+    注意: 由于修改了 GUIDBWrapper._get_actual_db 方法使其不再使用缓存，
+          调用 reset_connection 主要是为了保持兼容性和完整性。
+    """
+    global _client, _db_instance
+
+    print("[DB Connector] 正在执行数据库完全重置...")
+    # 1. 关闭全局 MongoDB 客户端连接 (与 close_db_connection 逻辑类似)
+    if _client:
+        client_id = id(_client)
+        print(f"[DB Connector] 正在关闭现有的 MongoDB 客户端连接... ID: {client_id}")
+        try:
+            _client.close()
+            print(f"[DB Connector] MongoDB 客户端连接成功关闭，ID: {client_id}")
+        except Exception as e:
+            print(f"[DB Connector] 关闭客户端连接时出错: {e}")
+        finally:
+            _client = None
+            _db_instance = None
+            print("[DB Connector] 全局客户端和数据库实例引用已清除") 
+    else:
+        print("[DB Connector] 没有活动的全局 MongoDB 客户端可关闭")
+
+    # 2. 如果提供了 GUIDBWrapper 实例，则重置其内部缓存
+    # 注意: 现在的 GUIDBWrapper._get_actual_db 不再使用缓存，这一步主要是为了保持兼容性
+    if db_wrapper_instance is not None:
+        if isinstance(db_wrapper_instance, GUIDBWrapper):
+            print("[DB Connector] 正在重置 GUIDBWrapper 内部缓存... (尽管现在不再使用缓存)")
+            db_wrapper_instance.reset_connection() 
+        else:
+            print(f"[DB Connector] 警告: 提供的 db_object 不是 GUIDBWrapper 的实例。类型: {type(db_wrapper_instance)}。无法重置其缓存。")
+    else:
+        print("[DB Connector] 注意: 未提供 GUIDBWrapper 实例，仅重置了全局连接")
 
 # 添加新的函数或方法 

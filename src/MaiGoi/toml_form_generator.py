@@ -116,6 +116,7 @@ class TomlFormGenerator:
         template_filename: str = "bot_config_template.toml",
         save_callback: Optional[SaveCallback] = None, # Callback for saving
         debounce_interval: float = 1.0, # Debounce time in seconds
+        config_metadata: Optional[Dict[str, Any]] = None, # 配置元数据
     ):
         """
         初始化表单生成器。
@@ -127,6 +128,7 @@ class TomlFormGenerator:
             template_filename: 要使用的模板文件名
             save_callback: 保存配置的回调函数
             debounce_interval: 自动保存的防抖间隔（秒）
+            config_metadata: 配置项的元数据信息
         """
         self.page = page
         self.config_data = config_data
@@ -137,6 +139,7 @@ class TomlFormGenerator:
         self.debounce_interval = debounce_interval
         self.last_change_time = 0
         self.save_timer: Optional[threading.Timer] = None # For debouncing
+        self.config_metadata = config_metadata or {} # 存储元数据
 
         # 加载指定的模板文档
         self.template_doc = load_template_with_comments(template_filename)
@@ -151,11 +154,48 @@ class TomlFormGenerator:
         # 使用 self.config_data 构建表单
         self._process_toml_section(self.config_data, self.parent_container)
 
-    def _get_comment(self, key_path: str) -> str:
-        """获取指定键路径的注释，并确保结果是字符串"""
+    def _get_metadata(self, key_path: str) -> Dict[str, Any]:
+        """获取指定键路径的元数据"""
         try:
+            if not self.config_metadata:
+                return {}
+            
+            # 直接尝试获取元数据
+            if key_path in self.config_metadata:
+                return self.config_metadata[key_path]
+            
+            # 如果找不到，尝试递归查找
+            parts = key_path.split(".")
+            current = self.config_metadata
+            
+            for part in parts:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    # 如果找不到完整路径，尝试仅使用最后一部分
+                    if len(parts) > 1 and parts[-1] in self.config_metadata:
+                        return self.config_metadata[parts[-1]]
+                    return {}
+                
+            # 如果找到的是字典并且包含元数据属性，返回它
+            if isinstance(current, dict) and any(k in current for k in ["describe", "important", "can_edit"]):
+                return current
+            
+            return {}
+        except Exception as e:
+            print(f"获取元数据出错: {key_path}, {e}")
+            return {}
+
+    def _get_comment(self, key_path: str) -> str:
+        """获取指定键路径的注释，优先使用元数据中的描述"""
+        try:
+            # 首先尝试从元数据中获取描述
+            metadata = self._get_metadata(key_path)
+            if metadata and "describe" in metadata:
+                return metadata["describe"]
+            
+            # 如果没有元数据描述，则从模板中获取注释
             comment = get_comment_for_key(self.template_doc, key_path)
-            # 确保返回值是字符串
             if comment and isinstance(comment, str):
                 return comment
         except Exception as e:
@@ -204,19 +244,42 @@ class TomlFormGenerator:
         # 处理简单值
         for key, value in simple_items.items():
             full_path = f"{section_path}.{key}" if section_path else key
+            # 获取注释和元数据
+            comment = self._get_comment(full_path)
+            metadata = self._get_metadata(full_path)
+            
+            # 创建控件
             control = self._create_control_for_value(key, value, full_path)
+            
             if control:
-                if indent > 0:  # 添加缩进
+                # 创建控件容器
+                control_container = ft.Column([control], tight=True)
+                
+                # 如果有描述，添加描述文本
+                if comment:
+                    description = ft.Text(
+                        comment,
+                        size=12,
+                        color=ft.colors.SECONDARY,
+                        italic=True,
+                    )
+                    control_container.controls.append(description)
+                
+                # 添加分隔线
+                control_container.controls.append(ft.Divider(thickness=0.5))
+                
+                # 处理缩进
+                if indent > 0:
                     row = ft.Row(
                         [
                             ft.Container(width=indent * 20),  # 每级缩进20像素
-                            control,
+                            control_container,
                         ],
                         alignment=ft.MainAxisAlignment.START,
                     )
                     container.controls.append(row)
                 else:
-                    container.controls.append(control)
+                    container.controls.append(control_container)
 
         # 处理子部分
         for key, value in subsections.items():
@@ -326,40 +389,60 @@ class TomlFormGenerator:
             traceback.print_exc()
 
     def _create_control_for_value(self, key: str, value: Any, full_path: str) -> Optional[ft.Control]:
-        """根据值的类型创建合适的Flet控件。"""
+        """为配置值创建对应的控件"""
+        # 获取注释和元数据
         comment = self._get_comment(full_path)
-
-        control_type = type(value)
+        metadata = self._get_metadata(full_path)
+        
+        # 检查是否可编辑
+        can_edit = metadata.get("can_edit", True)
+        important = metadata.get("important", False)
+        
+        # 根据值类型创建对应的控件
         if isinstance(value, bool):
-            return self._create_boolean_control(key, value, full_path, comment)
+            return self._create_boolean_control(key, value, full_path, comment, can_edit, important)
         elif isinstance(value, (int, float)):
-            return self._create_number_control(key, value, full_path, comment)
+            return self._create_number_control(key, value, full_path, comment, can_edit, important)
         elif isinstance(value, str):
-            return self._create_string_control(key, value, full_path, comment)
-        elif isinstance(value, (list, tomlkit.items.Array)):
-            # Ensure it's a list for processing
-            return self._create_list_control(key, list(value), full_path, comment)
-        elif isinstance(value, set): # Handle sets if needed
-             return self._create_set_control(key, value, full_path, comment)
-        else:
-            print(f"不支持的配置类型: {control_type} for key '{key}'")
-            return ft.Text(f"{key}: Unsupported type ({control_type})", color=ft.colors.RED)
+            return self._create_string_control(key, value, full_path, comment, can_edit, important)
+        elif isinstance(value, list):
+            return self._create_list_control(key, value, full_path, comment, can_edit, important)
+        elif isinstance(value, set):
+            return self._create_set_control(key, value, full_path, comment, can_edit, important)
+        return None
 
-    def _create_boolean_control(self, key: str, value: bool, path: str, comment: str = "") -> ft.Control:
-        control = ft.Checkbox(label=key, value=value, tooltip=comment)
-        control.on_change = lambda e: self._update_config_value(path, e.control.value)
+    def _create_boolean_control(self, key: str, value: bool, path: str, comment: str = "", can_edit: bool = True, important: bool = False) -> ft.Control:
+        """创建布尔值控件"""
+        control = ft.Switch(
+            label=key,
+            value=value,
+            disabled=not can_edit,
+            on_change=lambda e: self._update_config_value(path, e.control.value) if can_edit else None,
+        )
+        
+        if comment:
+            control.tooltip = comment
+            
+        if important:
+            control.label_style = ft.TextStyle(weight=ft.FontWeight.BOLD)
+            
         return control
 
-    def _create_number_control(self, key: str, value: Union[int, float], path: str, comment: str = "") -> ft.Control:
+    def _create_number_control(self, key: str, value: Union[int, float], path: str, comment: str = "", can_edit: bool = True, important: bool = False) -> ft.Control:
+        """创建数字控件"""
         control = ft.TextField(
             label=key,
             value=str(value),
-            tooltip=comment,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            suffix_text="(数字)"
+            disabled=not can_edit,
+            on_change=lambda e: self._handle_number_change(path, e.control.value) if can_edit else None,
         )
-        # Add on_change handler
-        control.on_change = lambda e: self._handle_number_change(path, e.control.value)
+        
+        if comment:
+            control.tooltip = comment
+            
+        if important:
+            control.label_style = ft.TextStyle(weight=ft.FontWeight.BOLD)
+            
         return control
 
     def _handle_number_change(self, path: str, text_value: str):
@@ -377,144 +460,183 @@ class TomlFormGenerator:
             # control = self.controls_map.get(path)
             # if control: control.error_text = "请输入有效数字"
 
-    def _create_string_control(self, key: str, value: str, path: str, comment: str = "") -> ft.Control:
-        is_multiline = "\n" in value or len(value) > 60 # Simple heuristic for multiline
+    def _create_string_control(self, key: str, value: str, path: str, comment: str = "", can_edit: bool = True, important: bool = False) -> ft.Control:
+        """创建字符串控件"""
+        is_multiline = len(value) > 50 or "\n" in value # 检查是否应该多行
+        
         control = ft.TextField(
             label=key,
             value=value,
-            tooltip=comment,
             multiline=is_multiline,
-            min_lines=3 if is_multiline else 1,
-            max_lines=10 if is_multiline else 1,
-            expand=not is_multiline, # Expand single line text fields
-            # keyboard_type=ft.KeyboardType.TEXT, # Default
+            min_lines=1 if not is_multiline else 3,
+            max_lines=1 if not is_multiline else 8,
+            disabled=not can_edit,
+            on_change=lambda e: self._update_config_value(path, e.control.value) if can_edit else None,
         )
-        control.on_change = lambda e: self._update_config_value(path, e.control.value)
+        
+        if comment:
+            control.tooltip = comment
+            
+        if important:
+            control.label_style = ft.TextStyle(weight=ft.FontWeight.BOLD)
+        
         return control
 
-    def _create_list_control(self, key: str, value: List[Any], path: str, comment: str = "") -> ft.Control:
+    def _create_list_control(self, key: str, value: List[Any], path: str, comment: str = "", can_edit: bool = True, important: bool = False) -> ft.Control:
         """为列表类型创建控件 (修改以支持自动保存)"""
         items_column = ft.Column([]) # Column to hold list item controls
-        self.controls_map[path] = items_column # Store the column itself for adding items
-
-        # Keep track of current items and their controls within this instance
-        list_item_controls = {} # Maps item control UID to its value/row
+        list_item_controls = {} # Maps index to control
 
         def update_list_value():
-            """Reads current item controls and updates the config data."""
-            new_list = []
-            # Iterate through controls in the items_column
-            for row_control in items_column.controls:
-                if isinstance(row_control, ft.Row) and len(row_control.controls) > 1:
-                    item_control = row_control.controls[0] # Assuming TextField is first
-                    if isinstance(item_control, ft.TextField):
-                        # Attempt type conversion based on original list type if needed
-                        # For simplicity, assuming string list for now
-                        new_list.append(item_control.value)
-                    elif isinstance(item_control, ft.Checkbox): # Example for list of booleans
-                        new_list.append(item_control.value)
-                    # Add more types as needed
-            print(f"Updating list {path} to: {new_list}")
-            self._update_config_value(path, new_list) # Trigger update and auto-save
+            """更新配置数据中的列表值"""
+            updated_list = []
+            for i in range(len(list_item_controls)):
+                if i in list_item_controls and list_item_controls[i]:
+                    control = list_item_controls[i].controls[0] # Get the TextField
+                    if hasattr(control, "value"):
+                        try:
+                            # Try to convert numbers if possible
+                            item_value = control.value
+                            try:
+                                numeric_value = float(item_value)
+                                if numeric_value.is_integer():
+                                    item_value = int(numeric_value)
+                                else:
+                                    item_value = numeric_value
+                            except:
+                                pass # Not a number, keep as string
+                            updated_list.append(item_value)
+                        except Exception as e:
+                            print(f"Error getting value for list item {i}: {e}")
+            # Update the config data and trigger callback
+            self._update_config_value(path, updated_list)
 
         def on_item_change(e):
-            """Callback when an item's TextField/Checkbox changes."""
-            # Find the control that triggered the event
-            trigger_control = e.control
-            # Find its parent row
-            parent_row = None
-            for row in items_column.controls:
-                if isinstance(row, ft.Row) and trigger_control in row.controls:
-                    parent_row = row
-                    break
+            """Handle changes for any item in the list"""
+            if can_edit:
+                update_list_value()
 
-            if parent_row:
-                # Update the internal tracking (optional, update_list_value reads directly)
-                # list_item_controls[parent_row.uid]['value'] = trigger_control.value
-                # print(f"Item changed: {trigger_control.value}")
-                update_list_value() # Update the whole list in config data
-            else:
-                print("Warning: Could not find parent row for list item change.")
+        # 创建标题和添加按钮行
+        header_controls = [
+            ft.Text(key, weight=ft.FontWeight.BOLD),
+        ]
+        
+        # 仅在可编辑时添加按钮
+        if can_edit:
+            add_button = ft.IconButton(
+                icon=ft.icons.ADD,
+                tooltip="添加新项",
+                on_click=lambda e: add_item(),
+            )
+            header_controls.append(add_button)
+        
+        # 如果有注释，添加一个Info图标
+        if comment:
+            info_button = ft.IconButton(
+                icon=ft.icons.INFO_OUTLINE,
+                tooltip=comment,
+                icon_size=16
+            )
+            header_controls.insert(1, info_button) # 在文本后、添加按钮前插入
+            
+        if important:
+            header_controls[0] = ft.Text(key, weight=ft.FontWeight.BOLD, color=ft.colors.PRIMARY)
+        
+        header_row = ft.Row(header_controls, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
         def delete_item(e):
             """Deletes an item from the list UI and triggers update."""
-            row_to_delete = e.control.data # The Row control stored in button's data
+            if not can_edit:
+                return
+            
+            row_to_delete = e.control.data # Get the Row containing this button
             if row_to_delete in items_column.controls:
+                index_to_delete = items_column.controls.index(row_to_delete)
                 items_column.controls.remove(row_to_delete)
-                # Remove from tracking dict
-                if row_to_delete.uid in list_item_controls:
-                    del list_item_controls[row_to_delete.uid]
-                print(f"Deleted item row: {row_to_delete.uid}")
-                update_list_value() # Update the list in config data
+                
+                # Update our control map - shift all items after this one up
+                new_control_map = {}
+                for idx, control in list_item_controls.items():
+                    if idx < index_to_delete:
+                        new_control_map[idx] = control
+                    elif idx > index_to_delete:
+                        new_control_map[idx-1] = control
+                
+                list_item_controls.clear()
+                list_item_controls.update(new_control_map)
+                
+                update_list_value() # Update the stored list value
                 self.page.update() # Update UI immediately
-            else:
-                print("Warning: Row to delete not found in items column.")
 
         def add_item(e=None, item_value="", is_initial=False):
-            """Adds a new item control to the list UI."""
-            # Determine control type based on list content (simple: assume string)
-            # TODO: Add logic to infer type or handle mixed lists if needed
-            item_control = ft.TextField(value=str(item_value))
-            item_control.on_change = on_item_change # Attach change handler
-
-            delete_button = ft.IconButton(
-                ft.icons.DELETE_OUTLINE,
-                tooltip="删除此项",
-                icon_color=ft.colors.RED_ACCENT_200,
-                on_click=delete_item
+            """Adds a new item to the list UI (empty or with preset value)"""
+            if not can_edit and not is_initial:
+                return
+            
+            next_index = len(items_column.controls)
+            
+            # Create a row with TextField and delete button
+            item_controls = []
+            
+            # 创建文本框
+            item_field = ft.TextField(
+                value=str(item_value),
+                expand=True,
+                on_change=on_item_change,
+                disabled=not can_edit,
             )
-            new_row = ft.Row([item_control, delete_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            delete_button.data = new_row # Store row reference in button
-
-            items_column.controls.append(new_row)
-            list_item_controls[new_row.uid] = {'row': new_row, 'control': item_control}
-
+            item_controls.append(item_field)
+            
+            # 仅在可编辑时添加删除按钮
+            if can_edit:
+                delete_button = ft.IconButton(
+                    icon=ft.icons.DELETE_OUTLINE,
+                    on_click=delete_item,
+                    tooltip="删除此项",
+                )
+                item_controls.append(delete_button)
+            
+            item_row = ft.Row(item_controls, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            
+            # Store a reference to the delete button's parent row
+            if can_edit and len(item_controls) > 1:
+                item_controls[1].data = item_row
+            
+            # Add to our UI and control map
+            items_column.controls.append(item_row)
+            list_item_controls[next_index] = item_row
+            
             if not is_initial:
-                update_list_value() # Update config data when item added manually
-                self.page.update()
+                self.page.update() # Update UI immediately
+                update_list_value() # Update the stored list
 
-        # Populate initial items
+        # Populate with existing items
         for item in value:
             add_item(item_value=item, is_initial=True)
 
-        # Add button to add new items
-        add_button = ft.ElevatedButton("添加新项", icon=ft.icons.ADD, on_click=add_item)
+        # Assemble the container for the whole list control
+        list_container = ft.Column([
+            header_row,
+            items_column,
+        ])
 
-        # Main container for the list control
-        list_container = ft.Column(
-            [
-                ft.Row([ft.Text(key, weight=ft.FontWeight.BOLD), ft.IconButton(icon=ft.icons.INFO_OUTLINE, tooltip=comment, icon_size=14) if comment else ft.Container()], vertical_alignment=ft.CrossAxisAlignment.CENTER), # Title row
-                ft.Divider(),
-                ft.Container(items_column, border=ft.border.all(1, ft.colors.OUTLINE), padding=5), # Items area
-                add_button, # Add button
-            ],
-            spacing=5,
-        )
         return list_container
 
-    def _create_set_control(self, key: str, value: set, path: str, comment: str = "") -> ft.Control:
+    def _create_set_control(self, key: str, value: set, path: str, comment: str = "", can_edit: bool = True, important: bool = False) -> ft.Control:
         """为集合类型创建控件 (修改以支持自动保存)"""
         items_column = ft.Column([], spacing=2, scroll=ft.ScrollMode.ADAPTIVE)
-        self.controls_map[path] = items_column # Store the column itself
-
-        # Keep track of current items and their controls
-        set_item_controls = {} # Maps item TEXT (value) to its Row control
+        set_item_controls = {} # Maps text value to Row control
 
         def update_set_value():
-            """Reads current item controls and updates the config data."""
-            new_set = set()
-            # Iterate through tracked controls (using values from the dict)
-            for item_text in list(set_item_controls.keys()): # Iterate over a copy of keys
-                # Assume items are strings for simplicity in sets
-                new_set.add(item_text)
-
-            print(f"Updating set {path} to: {new_set}")
-            # Convert set back to list for saving if TOML library requires it
-            # (tomlkit might handle sets directly, but list is safer)
-            self._update_config_value(path, list(new_set)) # Trigger update and auto-save
+            """Update config with current set items"""
+            current_values = set(set_item_controls.keys())
+            self._update_config_value(path, current_values)
 
         def delete_item(e):
             """Deletes an item from the set UI and triggers update."""
+            if not can_edit:
+                return
+            
             row_to_delete = e.control.data # The Row control stored in button's data
             item_text_to_delete = None
             # Find the text associated with this row
@@ -533,81 +655,112 @@ class TomlFormGenerator:
                 print(f"Warning: Row/Item to delete not found for set {path}.")
 
         def add_item_from_field(e=None, item_text=""):
-            """Adds a new item from the input field to the set UI."""
-            if not item_text:
-                item_text = add_item_field.value.strip()
-
-            if not item_text:
-                return # Ignore empty input
-
-            # Check for duplicates
-            if item_text in set_item_controls:
-                 if self.page: # Show feedback if page context is available
-                     self.page.show_snack_bar(ft.SnackBar(ft.Text(f"项目 '{item_text}' 已存在于集合中"), open=True))
-                 add_item_field.value = "" # Clear field even if duplicate
-                 add_item_field.update()
-                 return
-
-            # Create UI elements for the new item
-            item_label = ft.Text(item_text, expand=True)
-            delete_button = ft.IconButton(
-                ft.icons.DELETE_OUTLINE,
+            """Adds item from text field or directly from provided text"""
+            if not can_edit and not item_text:
+                return
+            
+            # Get the text either from event or parameter
+            text_to_add = item_text
+            if not text_to_add and e and hasattr(e, "control") and hasattr(e.control, "value"):
+                text_to_add = e.control.value.strip()
+            
+            if not text_to_add:
+                return # Skip empty items
+            
+            # Skip if this exact text is already in the set
+            if text_to_add in set_item_controls:
+                print(f"Item already exists in set: {text_to_add}")
+                return
+            
+            # Create a row with the item text and a delete button
+            item_display = ft.Text(text_to_add, size=14)
+            delete_btn = ft.IconButton(
+                icon=ft.icons.DELETE_OUTLINE,
                 tooltip="删除此项",
-                icon_color=ft.colors.RED_ACCENT_200,
-                on_click=delete_item
+                on_click=delete_item,
             )
-            new_row = ft.Row([item_label, delete_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            delete_button.data = new_row # Store row reference
-
-            # Add to UI and tracking dict
-            items_column.controls.append(new_row)
-            set_item_controls[item_text] = new_row
-
-            # Clear input field and update UI
-            add_item_field.value = ""
-            update_set_value() # Update config data
-            self.page.update()
-
-        # Populate initial items
-        for item in sorted(list(value)): # Sort for consistent display order
-            item_str = str(item) # Ensure string representation
-            # Create UI elements (similar to add_item_from_field but without adding to config yet)
-            item_label = ft.Text(item_str, expand=True)
-            delete_button = ft.IconButton(
-                ft.icons.DELETE_OUTLINE,
-                tooltip="删除此项",
-                icon_color=ft.colors.RED_ACCENT_200,
-                on_click=delete_item
+            item_row = ft.Row(
+                [
+                    item_display,
+                    delete_btn,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
-            row = ft.Row([item_label, delete_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            delete_button.data = row # Store row reference
-            items_column.controls.append(row)
-            set_item_controls[item_str] = row # Add to tracking
+            
+            # Store reference to row for deletion handler
+            delete_btn.data = item_row
+            
+            # Add to our maps and UI
+            items_column.controls.append(item_row)
+            set_item_controls[text_to_add] = item_row
+            
+            # If coming from text field, clear it
+            if e and hasattr(e, "control") and hasattr(e.control, "value"):
+                e.control.value = ""
+            
+            # Update data and UI
+            if not item_text: # Only update if not initial load
+                update_set_value()
+                self.page.update()
 
-        # Input field for adding new items
-        add_item_field = ft.TextField(
-            label="添加新项到集合",
-            hint_text="输入值后按 Enter 或点击按钮",
+        # Create add item fields
+        input_field = ft.TextField(
+            hint_text="添加新项...",
             expand=True,
-            on_submit=lambda e: add_item_from_field(e, e.control.value) # Use on_submit for Enter key
+            disabled=not can_edit,
         )
-
+        
         add_button = ft.IconButton(
-            icon=ft.icons.ADD_CIRCLE_OUTLINE,
-            tooltip="添加项目到集合",
-            on_click=lambda e: add_item_from_field(e, add_item_field.value) # Click handler
+            icon=ft.icons.ADD,
+            on_click=lambda e: add_item_from_field(e),
+            disabled=not can_edit,
+        )
+        
+        # 添加 key_down 事件，可以按 Enter 添加
+        if can_edit:
+            input_field.on_submit = lambda e: add_item_from_field(e)
+        
+        input_row = ft.Row(
+            [input_field, add_button],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
 
-        # Main container for the set control
-        set_container = ft.Column(
-            [
-                ft.Row([ft.Text(key, weight=ft.FontWeight.BOLD), ft.IconButton(icon=ft.icons.INFO_OUTLINE, tooltip=comment, icon_size=14) if comment else ft.Container()], vertical_alignment=ft.CrossAxisAlignment.CENTER), # Title row
-                ft.Divider(),
-                ft.Container(items_column, border=ft.border.all(1, ft.colors.OUTLINE), padding=5, height=150), # Items area with fixed height
-                ft.Row([add_item_field, add_button], alignment=ft.MainAxisAlignment.START) # Add row
-            ],
-            spacing=5,
+        # Populate existing items
+        for item in value:
+            add_item_from_field(item_text=str(item)) # Add initial items
+
+        # Create header row
+        header_controls = [
+            ft.Text(key, weight=ft.FontWeight.BOLD),
+        ]
+        
+        # 如果有注释，添加一个Info图标
+        if comment:
+            info_button = ft.IconButton(
+                icon=ft.icons.INFO_OUTLINE,
+                tooltip=comment,
+                icon_size=16
+            )
+            header_controls.append(info_button)
+            
+        if important:
+            header_controls[0] = ft.Text(key, weight=ft.FontWeight.BOLD, color=ft.colors.PRIMARY)
+        
+        header_row = ft.Row(
+            header_controls, 
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
         )
+
+        # 组装完整容器
+        input_section = ft.Column([input_row]) if can_edit else ft.Column([])
+        
+        set_container = ft.Column([
+            header_row,
+            items_column,
+            input_section,
+        ])
+
         return set_container
 
 
@@ -675,28 +828,17 @@ def create_toml_form(
     template_filename: str = "bot_config_template.toml",
     save_callback: Optional[SaveCallback] = None, # Pass save callback
     debounce_interval: float = 1.0, # Default debounce interval
+    config_metadata: Optional[Dict[str, Any]] = None, # 配置元数据
 ) -> TomlFormGenerator:
-    """
-    创建并构建TOML表单。
-
-    Args:
-        page: Flet Page 对象
-        config_data: 要编辑的配置数据
-        container: 放置表单控件的父容器
-        template_filename: 要使用的模板文件名
-        save_callback: 用于自动保存的回调函数
-        debounce_interval: 自动保存防抖间隔
-
-    Returns:
-        创建的 TomlFormGenerator 实例
-    """
+    """创建TOML表单生成器实例"""
     generator = TomlFormGenerator(
-        page,
-        config_data,
-        container,
-        template_filename,
-        save_callback, # Pass callback
-        debounce_interval,
+        page=page,
+        config_data=config_data,
+        parent_container=container,
+        template_filename=template_filename,
+        save_callback=save_callback,
+        debounce_interval=debounce_interval,
+        config_metadata=config_metadata, # 传递元数据
     )
     generator.build_form()
-    return generator # Return the instance
+    return generator

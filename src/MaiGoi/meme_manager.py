@@ -143,16 +143,26 @@ def add_meme_to_db(app_state: "AppState", image_file_path: str, description: str
         if not mmc_path.exists():
             return False, "无法找到MMC文件夹"
         
-        # 创建相对路径结构 (注意这应该与现有表情包的存储方式一致)
-        relative_path = f"imgs/{unique_filename}"
-        target_path = mmc_path / "imgs"
+        # 创建相对路径结构 (遵循MaiBot-Core的路径格式)
+        emoji_registed_dir = "emoji_registed"
+        data_dir = "data"
         
-        # 确保目标文件夹存在
-        if not target_path.exists():
-            target_path.mkdir(parents=True, exist_ok=True)
+        # 确保目标目录存在
+        target_dir = mmc_path / data_dir
+        if not target_dir.exists():
+            target_dir.mkdir(parents=True, exist_ok=True)
             
-        # 2. 复制图片到MMC文件夹
-        target_file = target_path / unique_filename
+        target_registed_dir = target_dir / emoji_registed_dir
+        if not target_registed_dir.exists():
+            target_registed_dir.mkdir(parents=True, exist_ok=True)
+            
+        # 目标文件的完整路径
+        target_file = target_registed_dir / unique_filename
+        
+        # 用于存储在数据库的相对路径 (格式: "data\emoji_registed\文件名")
+        relative_path = f"{data_dir}\\{emoji_registed_dir}\\{unique_filename}"
+            
+        # 2. 复制图片到目标文件夹
         shutil.copy2(source_path, target_file)
         
         # 3. 计算图片哈希值和获取图片格式
@@ -173,8 +183,8 @@ def add_meme_to_db(app_state: "AppState", image_file_path: str, description: str
         emoji_collection = app_state.gui_db.emoji
         new_meme = {
             "filename": unique_filename,
-            "path": str(target_path),
-            "full_path": relative_path,
+            "path": str(target_registed_dir),  # 存储目录路径
+            "full_path": relative_path,        # 存储相对路径 (data\emoji_registed\文件名)
             "description": description,
             "emotion": emotions,
             "hash": img_hash,
@@ -187,7 +197,7 @@ def add_meme_to_db(app_state: "AppState", image_file_path: str, description: str
         
         result = emoji_collection.insert_one(new_meme)
         if result.inserted_id:
-            print(f"[MemeManager] Added new meme with ID: {result.inserted_id}, hash: {img_hash}")
+            print(f"[MemeManager] Added new meme with ID: {result.inserted_id}, hash: {img_hash}, path: {relative_path}")
             return True, "表情包添加成功"
         else:
             # 如果插入失败，删除已复制的文件
@@ -206,7 +216,7 @@ def add_meme_to_db(app_state: "AppState", image_file_path: str, description: str
         return False, f"添加表情包失败: {e}"
 
 def delete_meme_from_db(app_state: "AppState", meme_id: str):
-    """从数据库中删除表情包，并可选择性地删除对应图片文件
+    """从数据库中删除表情包，并删除对应图片文件
     
     Args:
         app_state: 应用状态对象
@@ -228,7 +238,7 @@ def delete_meme_from_db(app_state: "AppState", meme_id: str):
             return False, "未找到表情包"
         
         # 2. 获取文件路径
-        file_path = meme_doc.get("full_path")
+        file_relative_path = meme_doc.get("full_path", "")
         
         # 3. 从数据库中删除记录
         result = emoji_collection.delete_one({"_id": ObjectId(meme_id)})
@@ -236,9 +246,10 @@ def delete_meme_from_db(app_state: "AppState", meme_id: str):
         if result.deleted_count > 0:
             print(f"[MemeManager] Meme ID {meme_id} deleted from database.")
             
-            # 4. 尝试删除文件（如果存在）
-            if file_path:
-                full_file_path = Path(app_state.mmc_path) / file_path
+            # 4. 删除文件（如果存在）
+            if file_relative_path:
+                # 构建完整文件路径
+                full_file_path = Path(app_state.mmc_path) / file_relative_path
                 if full_file_path.exists():
                     try:
                         full_file_path.unlink()
@@ -246,6 +257,8 @@ def delete_meme_from_db(app_state: "AppState", meme_id: str):
                     except Exception as file_e:
                         print(f"[MemeManager] Warning: Could not delete file {full_file_path}: {file_e}")
                         # 注意：我们仍然认为操作成功，因为数据库中的记录已被删除
+                else:
+                    print(f"[MemeManager] Warning: File does not exist: {full_file_path}")
             
             return True, "表情包已删除"
         else:

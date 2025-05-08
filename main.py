@@ -67,23 +67,6 @@ def route_change(route: ft.RouteChangeEvent):
 
         if is_running:
             logger.info("[Route Change /console] Process is running.")
-            # if app_state.stop_event.is_set():
-            #     logger.info("[Route Change /console] Stop event was set, clearing and restarting processor loop.")
-            #     app_state.stop_event.clear()
-
-            #     logger.debug(f"启动processor_loop前检查：output_list_view = {app_state.output_list_view}, 控件数 = {len(app_state.output_list_view.controls) if app_state.output_list_view else 0}")
-            #     logger.debug(f"output_list_view.visible = {app_state.output_list_view.visible if app_state.output_list_view else 'N/A'}")
-                
-            #     page.run_task(
-            #         output_processor_loop, 
-            #         page, 
-            #         app_state,
-            #         "bot.py",                      # 明确指定process_id 
-            #         app_state.output_queue,        # 明确传递队列
-            #         app_state.stop_event,          # 明确传递事件
-            #         app_state.output_list_view     # 明确传递ListView
-            #     )
-            #     logger.info("[Route Change /console] 已启动processor_loop，参数完整传递")
         else:
             logger.info("[Route Change /console] Process is not running.")
             # 获取bot.py进程状态并确定显示消息
@@ -368,6 +351,7 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
+    print("正在启动中......")
     ft.app(
         target=main,
         port=8077
