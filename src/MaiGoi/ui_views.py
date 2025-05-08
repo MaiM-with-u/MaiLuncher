@@ -3,6 +3,8 @@ from typing import Optional, TYPE_CHECKING
 import psutil
 import os
 import sys
+from .utils import show_snackbar  # Removed run_script import
+from .meme_manager import build_meme_grid # <-- Import the new builder function
 
 if TYPE_CHECKING:
     from .state import AppState
@@ -69,6 +71,14 @@ def get_asset_path(relative_path: str) -> str:
 
 def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
     """Creates the main view ('/') of the application."""
+    # --- Refs for UI manipulation ---
+    # Ref对象用于引用和控制界面元素
+    # 创建这些引用以便稍后能访问和操作这些控件
+    ref_main_button_shape_container = ft.Ref[ft.Container]()  # 背景形状容器的引用
+    ref_main_cards_column = ft.Ref[ft.Column]()  # 主卡片列内容的引用
+    ref_main_cards_column_container = ft.Ref[ft.Container]()  # 主卡片列容器的引用(用于动画)
+    ref_active_tool_display_container = ft.Ref[ft.Container]()  # 工具显示容器的引用
+
     # --- Set Page Padding to Zero --- #
     page.padding = 0
 
@@ -240,6 +250,132 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
             on_hover=handle_hover,  # Attach hover handler
         )
 
+    # --- Function to show the tools section (MOVED INSIDE create_main_view) ---
+    def show_tools_section(e): # Now has access to page and refs defined above
+        # 此函数负责显示工具页面的动画效果，主要完成三个动画：
+        # 1. 将背景图片缩小并移动到左下角
+        # 2. 将主卡片列向右滑出
+        # 3. 显示工具内容卡片
+        
+        # 1. 将背景形状容器缩小并移动
+        if ref_main_button_shape_container.current:
+            # target_left = -200
+            target_top = -600
+            target_scale_val = 0.2 # 缩小到原始大小的25%
+            
+            # animate_scale和animate_position已在容器初始化时设置
+            # Flet动画原理：当控件属性发生变化且设置了对应的animate_*属性时
+            # Flet会自动创建从旧值到新值的平滑过渡动画
+            ref_main_button_shape_container.current.scale = ft.transform.Scale(target_scale_val)
+            # ref_main_button_shape_container.current.left = target_left
+            ref_main_button_shape_container.current.top = target_top
+            # ref_main_button_shape_container.current.bottom = target_bottom
+            # ref_main_button_shape_container.current.top = None  # 设置bottom后需要清除top
+            # ref_main_button_shape_container.current.right = None # 设置left后需要清除right
+            ref_main_button_shape_container.current.update()
+
+        # 2. 将主卡片列容器向右滑出屏幕
+        if ref_main_cards_column_container.current:
+            # animate_offset已在容器初始化时设置
+            # offset是相对于控件尺寸的偏移量：
+            # offset(1.5, 0)表示水平方向右移控件宽度的1.5倍，垂直方向不变
+            ref_main_cards_column_container.current.offset = ft.transform.Offset(1.5, 0)
+            
+            # 定义动画结束后的回调函数
+            def on_slide_out_complete(e_anim):
+                if ref_main_cards_column_container.current:
+                    # 动画完成后将容器设为不可见，优化性能
+                    ref_main_cards_column_container.current.visible = False
+                    ref_main_cards_column_container.current.update()
+            
+            # 设置动画结束事件处理器
+            # on_animation_end会在offset动画完成后触发
+            ref_main_cards_column_container.current.on_animation_end = on_slide_out_complete
+            ref_main_cards_column_container.current.update()
+
+        # 3. 显示工具内容卡片
+        if ref_active_tool_display_container.current:
+            # 0. 清除上一次动画可能设置的 on_animation_end 回调
+            ref_active_tool_display_container.current.on_animation_end = None
+
+            # 1. 确保初始状态
+            ref_active_tool_display_container.current.visible = True
+            ref_active_tool_display_container.current.opacity = 0  # 初始完全透明
+            ref_active_tool_display_container.current.update()  # 立即应用初始状态
+
+            # 2. 设置动画属性（使用正确的AnimationCurve常量）
+            ref_active_tool_display_container.current.animate_opacity = ft.animation.Animation(
+                300,  # 持续时间300ms
+                ft.AnimationCurve.EASE_IN  # 使用标准曲线常量
+            )
+            
+            # 3. 触发动画（设置目标值）
+            ref_active_tool_display_container.current.opacity = 1
+            
+            # 4. 更新位置（可选）
+            ref_active_tool_display_container.current.alignment = ft.alignment.center_right
+            ref_active_tool_display_container.current.right = 60
+            ref_active_tool_display_container.current.top = 150
+            
+            # 5. 更新控件以应用更改并触发动画
+            ref_active_tool_display_container.current.update()
+        
+        # 更新整个页面
+        page.update()
+
+    # --- Function to hide the tools section and show main cards ---
+    def hide_tools_section(e):
+        # 此函数负责隐藏工具页面并返回到主菜单，与show_tools_section执行相反的动画：
+        # 1. 淡出并隐藏工具内容卡片
+        # 2. 将主卡片列滑回原位
+        # 3. 恢复背景图形到原始大小和位置
+        
+        # 1. 淡出工具内容卡片
+        if ref_active_tool_display_container.current:
+            # 显式设置动画，使用easeOut曲线
+            # "easeOut"与"easeIn"相反，表示动画开始快然后减速
+            # 使用不同的曲线可以创造不同的视觉效果和感受
+            ref_active_tool_display_container.current.animate_opacity = ft.animation.Animation(300, ft.AnimationCurve.EASE_OUT)
+            # 设置目标透明度为0（完全透明）
+            ref_active_tool_display_container.current.opacity = 0
+            
+            # 定义动画结束后的回调函数
+            def on_tool_fade_out_complete(e_anim):
+                if ref_active_tool_display_container.current:
+                    # 动画完成后将卡片设为不可见，避免占用布局空间
+                    ref_active_tool_display_container.current.visible = False
+                    ref_active_tool_display_container.current.update()
+            
+            # 设置动画结束事件处理器
+            ref_active_tool_display_container.current.on_animation_end = on_tool_fade_out_complete
+            ref_active_tool_display_container.current.update()
+
+        # 2. 将主卡片列容器滑回原位
+        if ref_main_cards_column_container.current:
+            # 先设置为可见，确保在执行动画前能看到它
+            ref_main_cards_column_container.current.visible = True
+            # animate_offset已在容器初始化时设置
+            # 设置offset为(0,0)，即回到原始位置
+            ref_main_cards_column_container.current.offset = ft.transform.Offset(0, 0)
+            # 清除之前设置的动画结束回调
+            ref_main_cards_column_container.current.on_animation_end = None
+            ref_main_cards_column_container.current.update()
+
+        # 3. 恢复背景形状容器到原始状态
+        if ref_main_button_shape_container.current:
+            # animate_scale和animate_position已在容器初始化时设置
+            # 恢复到原始缩放比例(1.0)
+            ref_main_button_shape_container.current.scale = ft.transform.Scale(1.0)
+            # 恢复到原始位置坐标
+            ref_main_button_shape_container.current.left = 35
+            ref_main_button_shape_container.current.top = -420
+            ref_main_button_shape_container.current.bottom = None
+            ref_main_button_shape_container.current.right = None
+            ref_main_button_shape_container.current.update()
+        
+        # 更新整个页面，确保所有变化都生效
+        page.update()
+
     # --- Main Button Action --- #
     # Need process_manager for the main button action
     start_bot_card = create_action_card(
@@ -251,36 +387,6 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
         tooltip="打开 Bot 控制台视图 (在此启动 Bot)",
     )
 
-    # --- Define Popup Menu Items --- #
-    menu_items = [
-        ft.PopupMenuItem(
-            text="人格生成（测试版）",
-            on_click=lambda _: run_script("start_personality.bat", page, app_state),
-        ),
-    ]
-
-    # 创建一个包含 more_options_card 和 PopupMenuButton 的 Stack
-    more_options_card_stack = ft.Container(
-        content=ft.Stack(
-            [
-                ft.Container(
-                    content=ft.PopupMenuButton(
-                        items=menu_items,
-                        icon=ft.icons.MORE_VERT,
-                        icon_size=50,
-                        icon_color=ft.Colors.PRIMARY,  # 使用自定义颜色
-                        tooltip="选择要运行的脚本",
-                    ),
-                    right=50,  # 右侧距离
-                    top=20,  # 顶部距离
-                ),
-            ]
-        ),
-        height=150,  # 与普通卡片相同高度
-        width=450,  # 与普通卡片相同宽度
-        # 不需要设置 bgcolor 和 border_radius，因为 more_options_card 已包含这些样式
-        rotate=ft.transform.Rotate(angle=0.12),  # 与其他卡片使用相同的旋转角度
-    )
 
     # --- Main Column of Cards --- #
     main_cards_column = ft.Column(
@@ -306,16 +412,15 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                 margin=ft.margin.only(top=20, right=45),
                 rotate=ft.transform.Rotate(angle=0.12),
             ),
-            # Re-add the LPMM script card
-            # Wrap LPMM card
+            # Re-add the LPMM script card - Now "工具" card
             ft.Container(
                 content=create_action_card(
-                    page=page,  # Pass page object
-                    icon=ft.icons.MODEL_TRAINING_OUTLINED,  # Icon is not used visually but kept for consistency maybe
-                    text="学习",
-                    subtitle="使用LPMM知识库",
-                    on_click_handler=lambda _: run_script("start_lpmm.bat", page, app_state),
-                    tooltip="运行学习脚本 (start_lpmm.bat)",
+                    page=page,
+                    icon=ft.icons.CONSTRUCTION_OUTLINED, # New Icon
+                    text="工具",                          # New Text
+                    subtitle="所有方便的小工具",          # New Subtitle
+                    on_click_handler=show_tools_section, # New Handler for "工具" card
+                    tooltip="打开工具区",                # New Tooltip
                 ),
                 margin=ft.margin.only(top=20, right=15),
                 rotate=ft.transform.Rotate(angle=0.12),
@@ -340,6 +445,95 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
         horizontal_alignment=ft.CrossAxisAlignment.END,  # Align cards to the END (right)
         spacing=0,  # Let card margin handle spacing
         # expand=True, # Remove expand from the inner column if using Stack
+        ref=ref_main_cards_column, # Assign ref to the column
+    )
+
+    # --- Container for the main_cards_column (this will be animated) ---
+    main_cards_column_container_actual = ft.Container(
+        content=main_cards_column,
+        top=20,
+        right=20,
+        ref=ref_main_cards_column_container,
+        offset=ft.transform.Offset(0,0), # 初始偏移量，无偏移
+        animate_offset = ft.animation.Animation(400, "easeOutCubic"), # 初始化时设置偏移动画属性
+        # 在Flet中，必须在控件初始化时设置animate_*属性的原因：
+        # 1. 确保第一次属性变化时动画能正确触发
+        # 2. 如果在属性变化后才设置animate_*，第一次动画可能无法生效
+        # 3. animate_offset用于控制offset属性的变化动画
+    )
+
+    # --- Container for the "active tool" display ---
+    active_tool_card_content = create_action_card(
+        page=page,
+        icon=ft.icons.FOLDER_SPECIAL_OUTLINED, # Icon for the tools content
+        text="LPMM 工具", # Text for the tools content
+        subtitle="访问LPMM知识库", # Subtitle for the tools content
+        on_click_handler=lambda _: run_script("start_lpmm.bat", page, app_state), # Original action
+        tooltip="运行学习脚本 (start_lpmm.bat)"
+    )
+
+    # 添加人格生成卡片
+    personality_card_content = create_action_card(
+        page=page,
+        icon=ft.icons.PSYCHOLOGY_OUTLINED,  # 使用心理学图标
+        text="人格生成",  # 卡片标题
+        subtitle="测试版",  # 副标题
+        on_click_handler=lambda _: run_script("start_personality.bat", page, app_state),  # 使用原来的脚本
+        tooltip="运行人格生成脚本 (start_personality.bat)"
+    )
+
+    # 添加表情包管理卡片到工具区域
+    meme_management_card_content = create_action_card(
+        page=page,
+        icon=ft.icons.EMOJI_EMOTIONS_OUTLINED, 
+        text="表情包管理",
+        subtitle="查看和管理表情包",
+        on_click_handler=lambda _: page.go("/meme-management"), # 点击后跳转到表情包管理视图
+        tooltip="打开表情包管理界面"
+    )
+
+    tool_view_back_button = ft.ElevatedButton(
+        "返回主菜单", 
+        on_click=hide_tools_section,
+        icon=ft.icons.ARROW_BACK_IOS_NEW_ROUNDED,
+        # Style the button as needed
+        bgcolor=ft.colors.with_opacity(0.1, ft.colors.ON_SURFACE_VARIANT),
+        color=ft.colors.ON_SURFACE_VARIANT
+    )
+
+    active_tool_layout = ft.Column(
+        [
+            active_tool_card_content,  # LPMM工具卡片
+            ft.Container(height=20),  # 添加间距
+            personality_card_content,  # 人格生成卡片
+            ft.Container(height=20),  # 添加间距
+            meme_management_card_content, # 表情包管理卡片
+            ft.Container(
+                content=tool_view_back_button,
+                padding=ft.padding.only(top=25, bottom=10),
+                alignment=ft.alignment.top_center 
+            )
+        ],
+        alignment=ft.MainAxisAlignment.START,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=10,
+    )
+
+    active_tool_display_container_actual = ft.Container(
+        content=active_tool_layout, # 包含工具卡片和返回按钮
+        width=470, # 容器宽度
+        visible=False, # 初始不可见
+        opacity=0,     # 初始完全透明
+        ref=ref_active_tool_display_container,
+        animate_opacity = ft.animation.Animation(300, ft.AnimationCurve.EASE_IN), # 初始化时设置透明度动画
+        # Animation对象的参数说明：
+        # - 第一个参数：动画持续时间，单位毫秒，这里是300毫秒
+        # - 第二个参数：动画曲线，控制动画变化的节奏
+        #   - "linear"：匀速变化
+        #   - "easeIn"：先慢后快
+        #   - "easeOut"：先快后慢
+        #   - "easeInOut"：两端慢中间快
+        #   - "bounceOut"：有弹跳效果
     )
 
     return ft.View(
@@ -369,6 +563,16 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                         border_radius=ft.border_radius.all(10),
                         rotate=ft.transform.Rotate(-1.2),
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,  # Helps with rounded corners
+                        ref=ref_main_button_shape_container, # Assign ref to the image container
+                        animate_scale = ft.animation.Animation(400, "easeOutCubic"), # 初始化时设置缩放动画
+                        animate_position = ft.animation.Animation(400, "easeOutCubic"), # 初始化时设置位置动画
+                        # Flet支持多种动画类型：
+                        # 1. animate_opacity：控制透明度变化
+                        # 2. animate_scale：控制缩放变化
+                        # 3. animate_position：控制位置(left/top/right/bottom)变化
+                        # 4. animate_offset：控制偏移(基于控件尺寸的相对位移)
+                        # 5. animate_rotation：控制旋转角度变化
+                        # 6. animate：容器特有，控制多种属性(尺寸/颜色/边框等)变化
                     ),
                     ft.Container(
                         bgcolor=ft.Colors.TERTIARY,  # 使用自定义颜色
@@ -389,19 +593,9 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
                         top=-1600,
                         opacity=1,  # Overall opacity for the stripe
                     ),
-                    ft.Container(
-                        content=main_cards_column,
-                        top=20,  # 距离顶部
-                        right=20,  # 距离右侧
-                    ),
-                    # --- End positioned Container ---
-                    # "More..." card aligned bottom-right
-                    ft.Container(
-                        content=more_options_card_stack,
-                        # 重新定位"更多..."按钮
-                        right=10,  # 距离右侧
-                        bottom=15,  # 距离底部
-                    ),
+                    main_cards_column_container_actual, # Use the new container for main cards
+                    # --- Add the active tool display container to the stack ---
+                    active_tool_display_container_actual, # Add it here
                     # --- Add Large Text to Bottom Left ---
                     ft.Container(
                         content=ft.Text(
@@ -987,3 +1181,22 @@ def start_adapter_from_view(script_path, page, app_state, existing_process_id=No
         page.go(f"/adapters/{process_id}")
     else:
         show_snackbar(page, message, error=True)
+
+
+# --- Meme Management View --- #
+def create_meme_management_view(page: ft.Page, app_state: "AppState") -> ft.View:
+    """Creates the view for managing memes (/meme-management).
+       Uses the meme_manager to build the actual grid of memes.
+    """
+    
+    # The main content is now built by meme_manager
+    meme_grid_content = build_meme_grid(page, app_state)
+
+    return ft.View(
+        "/meme-management",
+        [
+            ft.AppBar(title=ft.Text("表情包管理"), bgcolor=ft.colors.SURFACE_VARIANT),
+            meme_grid_content, # <-- Use the content from meme_manager
+        ],
+        padding=0
+    )

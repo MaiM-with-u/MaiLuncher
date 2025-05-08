@@ -16,10 +16,12 @@ from src.MaiGoi.ui_views import (
     create_main_view,
     create_adapters_view,
     create_process_output_view,
+    create_meme_management_view,
 )
 from src.MaiGoi.config_manager import load_config, save_config # Removed get_config_path, verify_config_consistency
 from src.MaiGoi.ui_console_view import create_console_view
 from src.MaiGoi.ui_settings_view import create_settings_view
+from src.MaiGoi.db_connector import GUIDBWrapper, close_db_connection # <-- 导入数据库相关
 # from src.MaiGoi.config_manager import verify_config_consistency # Removed
 
 from loguru import logger
@@ -37,7 +39,9 @@ app_state = AppState()
 # 它需要访问app_state
 # logging automatically registers atexit handlers to flush and close file handlers.
 atexit.register(cleanup_on_exit, app_state)
+atexit.register(close_db_connection) # <-- 注册数据库关闭函数
 logger.info("atexit cleanup handler from process_manager registered.")
+logger.info("atexit close_db_connection handler registered.")
 
 
 def route_change(route: ft.RouteChangeEvent):
@@ -135,6 +139,9 @@ def route_change(route: ft.RouteChangeEvent):
         # Call the new settings view function
         settings_view = create_settings_view(page, app_state)
         page.views.append(settings_view)
+    elif target_route == "/meme-management":
+        meme_view = create_meme_management_view(page, app_state)
+        page.views.append(meme_view)
 
     elif target_route.startswith("/adapters/") and len(target_route.split("/")) == 3:
         parts = target_route.split("/")
@@ -332,6 +339,20 @@ def main(page: ft.Page):
     if not hasattr(app_state, 'bot_base_dir'):
         app_state.bot_base_dir = mmc_path 
         logger.info(f"Stored bot_base_dir in AppState (fallback): {app_state.bot_base_dir}")
+
+    # --- 初始化数据库访问 --- #
+    # mmc_path 此时已经解析完毕并存储在 app_state.mmc_path 中
+    # app_state.gui_db = get_gui_db(app_state.mmc_path) # 直接获取db实例，如果需要立即使用
+    # 或者使用包装器实现更彻底的懒加载，并能在需要时重新评估 mmc_path (如果它可能改变)
+    app_state.gui_db = GUIDBWrapper(lambda: app_state.mmc_path)
+    logger.info(f"数据库访问已通过 GUIDBWrapper 设置 (与 app_state.mmc_path: {app_state.mmc_path} 关联)")
+    # 你可以在这里尝试一次数据库连接，以尽早发现问题
+    # try:
+    #     if app_state.gui_db is not None:
+    #        app_state.gui_db.command('ping') # 尝试ping数据库
+    #        logger.info("成功 ping 数据库服务器。")
+    # except Exception as e:
+    #    logger.error(f"初始化时 ping 数据库失败: {e}")
 
     page.padding = 0
 
