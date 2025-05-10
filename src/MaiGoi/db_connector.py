@@ -116,6 +116,7 @@ class GUIDBWrapper:
         """
         self._mmc_path_provider = mmc_path_provider
         self._db_instance_internal = None
+        self._connection_error = None
         print("[DB Wrapper] 初始化 GUIDBWrapper 实例")
 
     def _get_actual_db(self) -> Database:
@@ -124,6 +125,7 @@ class GUIDBWrapper:
         mmc_path = self._mmc_path_provider()
         if not mmc_path:
             print("[DB Wrapper] 错误: mmc_path 未提供，无法初始化数据库。")
+            self._connection_error = "mmc_path未提供，无法初始化数据库"
             return None
             
         print(f"[DB Wrapper] _get_actual_db 调用，当前 mmc_path={mmc_path}, 忽略内部缓存")
@@ -135,11 +137,15 @@ class GUIDBWrapper:
             db_instance = get_gui_db(Path(mmc_path))
             if db_instance is None:
                 print("[DB Wrapper] 注意: get_gui_db 返回 None，可能是因为 .env 不存在或连接失败。")
+                self._connection_error = ".env文件不存在或数据库连接失败"
             else:
                 print(f"[DB Wrapper] 成功获取数据库实例，ID: {id(db_instance)}")
+                self._connection_error = None
             return db_instance
         except Exception as ex:
-            print(f"[DB Wrapper] 获取数据库实例出错: {ex}")
+            error_msg = f"获取数据库实例出错: {ex}"
+            print(f"[DB Wrapper] {error_msg}")
+            self._connection_error = error_msg
             return None
 
     def __getattr__(self, name):
@@ -147,8 +153,15 @@ class GUIDBWrapper:
         db = self._get_actual_db()
         if db is None:
             err_msg = f"数据库未初始化或连接失败，无法获取属性 '{name}'"
+            if self._connection_error:
+                err_msg += f"，原因: {self._connection_error}"
             print(f"[DB Wrapper] 错误: {err_msg}")
-            raise AttributeError(err_msg)
+            # 不抛出异常，而是返回一个空函数，防止程序崩溃
+            if name.startswith("__") and name.endswith("__"):
+                # 对于Python特殊方法，仍需抛出AttributeError以保持正常行为
+                raise AttributeError(err_msg)
+            # 返回一个空函数，避免调用时出错
+            return lambda *args, **kwargs: None
         return getattr(db, name)
 
     def __getitem__(self, key):
@@ -156,9 +169,69 @@ class GUIDBWrapper:
         db = self._get_actual_db()
         if db is None:
             err_msg = f"数据库未初始化或连接失败，无法获取集合 '{key}'"
+            if self._connection_error:
+                err_msg += f"，原因: {self._connection_error}"
             print(f"[DB Wrapper] 错误: {err_msg}")
-            raise KeyError(err_msg)
+            # 返回一个模拟的集合对象，防止程序崩溃
+            from pymongo.collection import Collection
+            class MockCollection:
+                def __init__(self, name):
+                    self.name = name
+                    
+                def __getattr__(self, name):
+                    # 所有操作都返回空结果
+                    return lambda *args, **kwargs: []
+                
+                def find(self, *args, **kwargs):
+                    return []
+                    
+                def find_one(self, *args, **kwargs):
+                    return None
+                    
+                def insert_one(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试写入集合 '{key}' 失败，数据库连接不可用")
+                    return None
+                    
+                def insert_many(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试写入集合 '{key}' 失败，数据库连接不可用")
+                    return None
+                    
+                def update_one(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试更新集合 '{key}' 失败，数据库连接不可用")
+                    return None
+                    
+                def update_many(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试更新集合 '{key}' 失败，数据库连接不可用")
+                    return None
+                    
+                def delete_one(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试删除集合 '{key}' 中的文档失败，数据库连接不可用")
+                    return None
+                    
+                def delete_many(self, *args, **kwargs):
+                    print(f"[DB Wrapper] 警告: 尝试删除集合 '{key}' 中的文档失败，数据库连接不可用")
+                    return None
+                    
+            return MockCollection(key)
         return db[key]
+
+    def get_connection_status(self):
+        """返回数据库连接状态信息"""
+        if self._connection_error:
+            return {
+                "connected": False,
+                "error": self._connection_error
+            }
+        db = self._get_actual_db()
+        if db is None:
+            return {
+                "connected": False,
+                "error": self._connection_error or "未知错误"
+            }
+        return {
+            "connected": True,
+            "error": None
+        }
 
     def reset_connection(self):
         """重置包装器内部缓存的数据库实例。"""
@@ -167,6 +240,7 @@ class GUIDBWrapper:
         else:
             print("[DB Wrapper] 内部数据库实例缓存已重置 (原本就是 None)")
         self._db_instance_internal = None
+        self._connection_error = None
 
 def close_db_connection():
     """关闭 MongoDB 客户端连接（如果已打开）。"""

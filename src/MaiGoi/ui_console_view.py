@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Import components and state
 from .flet_interest_monitor import InterestMonitorDisplay
-from .process_manager import update_buttons_state  # 动态导入
+from .process_manager import update_buttons_state, start_maicore_in_new_window  # 动态导入
 
 if TYPE_CHECKING:
     from .state import AppState
@@ -101,7 +101,7 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
     )
     card_radius = ft.border_radius.all(4)
     card_bgcolor = ft.colors.with_opacity(0.65, ft.colors.PRIMARY_CONTAINER)
-    card_padding = ft.padding.symmetric(vertical=8, horizontal=12)  # Smaller padding for console buttons
+    card_padding = ft.padding.symmetric(vertical=6, horizontal=8)  # 从vertical=8, horizontal=12减小
 
     # --- Create Buttons --- #
     # Create the main action button (Start/Stop) as a styled Container
@@ -117,6 +117,21 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
     )
     app_state.console_action_button = console_action_button  # Store container ref
 
+    # 创建在新窗口启动的按钮
+    new_window_button_text = ft.Text("新窗口启动", size=12)
+    new_window_button = ft.Container(
+        content=new_window_button_text,
+        tooltip="在新命令行窗口启动MaiCore",
+        on_click=lambda e: start_maicore_in_new_window(page, app_state),
+        bgcolor=ft.colors.with_opacity(0.6, ft.colors.BLUE_ACCENT_100),
+        border_radius=card_radius,
+        shadow=card_shadow,
+        padding=card_padding,
+        ink=True,
+        # 使用负边距将按钮向左移动
+        margin=ft.margin.only(left=-2),
+    )
+
     # Create the auto-scroll toggle button as a styled Container with Text
     auto_scroll_text_content = "自动滚动 开" if app_state.is_auto_scroll_enabled else "自动滚动 关"
     auto_scroll_text = ft.Text(auto_scroll_text_content, size=12)
@@ -129,8 +144,8 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
         shadow=card_shadow,
         padding=card_padding,
         ink=True,
-        # Remove left margin
-        margin=ft.margin.only(right=10),
+        # 移除右侧边距
+        # margin=ft.margin.only(right=10),
     )
     # Store the text control inside the toggle button container for updating
     toggle_button.data = auto_scroll_text  # Store Text reference in data attribute
@@ -149,30 +164,35 @@ def create_console_view(page: ft.Page, app_state: "AppState") -> ft.View:
         controls=[
             ft.Text("操作按钮", weight=ft.FontWeight.BOLD),
             ft.Divider(),
-            ft.Text("..."),  # 下半部分占位符
-            # 将按钮放在底部
-            # Wrap the Row in a Container to apply padding
+            # 第一行：创建一个Stack来叠放两个按钮而不是使用Row，以便更精确控制位置
+            ft.Stack(
+                [
+                    console_action_button,  # 启动MaiCore按钮
+                    ft.Container(
+                        content=new_window_button,
+                        alignment=ft.alignment.center_right,
+                        margin=ft.margin.only(right=10),
+                    ),
+                ],
+                height=40,  # 设置一个固定高度
+            ),
+            # 第二行：自动滚动按钮单独一行
             ft.Container(
-                content=ft.Row(
-                    [console_action_button, toggle_button],
-                    # alignment=ft.MainAxisAlignment.SPACE_AROUND,
-                    alignment=ft.MainAxisAlignment.START,  # Align buttons to the start
-                ),
-                # Apply padding to the container holding the row
-                padding=ft.padding.only(bottom=10),
+                content=toggle_button,  # 自动滚动按钮
+                padding=0,  # 移除内边距
+                margin=ft.margin.only(top=8),  # 只保留上边距
             ),
         ],
-        # height=100, # 可以给下半部分固定高度，或者让它自适应
+        # 给底部区域设置固定最小高度，确保有足够空间显示所有按钮
+        height=150,
         spacing=5,
-        # Remove padding from the Column itself
-        # padding=ft.padding.only(bottom=10)
     )
     info_column = ft.Column(
         controls=[
             info_top_section,
             info_bottom_section,
         ],
-        width=250,  # 增加宽度
+        width=260,  # 将宽度从250增加到300
         spacing=10,  # 分区之间的间距
     )
 

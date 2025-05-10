@@ -9,13 +9,9 @@ import urllib.request
 import time
 
 class PythonInstallerApp:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, on_close_callback=None):
         self.page = page
-        self.page.title = "Python 环境安装助手"
-        self.page.window.width = 800
-        self.page.window.height = 900
-        self.page.padding = 20
-        self.page.theme_mode = ft.ThemeMode.SYSTEM
+        self.on_close_callback = on_close_callback
         
         # 状态控件
         self.status_text = ft.Text("正在检测系统环境...", size=14)
@@ -72,16 +68,22 @@ class PythonInstallerApp:
         self.file_picker = ft.FilePicker(on_result=self.on_requirements_picked)
         page.overlay.append(self.file_picker)
         
-        # 构建UI
-        self.build_ui()
+        # 创建对话框
+        self.dialog = ft.AlertDialog(
+            title=ft.Text("Python 环境安装助手"),
+            content=self._build_dialog_content(),
+            actions=[
+                ft.TextButton("关闭", on_click=self._on_close),
+            ],
+            on_dismiss=self._on_dialog_dismiss,
+            modal=True,
+        )
         
-        # 立即执行检测，不等待window_on_loaded事件
-        threading.Thread(target=self.check_python_env).start()
+        # 将对话框添加到页面的 overlay 中
+        self.page.overlay.append(self.dialog)
     
-    def build_ui(self):
-        """构建用户界面"""
-        self.page.controls.clear()
-        
+    def _build_dialog_content(self):
+        """构建对话框内容"""
         header = ft.Column([
             ft.Row([
                 ft.Text("Python 环境安装助手", size=24, weight=ft.FontWeight.BOLD),
@@ -120,22 +122,44 @@ class PythonInstallerApp:
                         border=ft.border.all(1, ft.colors.OUTLINE),
                         border_radius=5,
                         padding=5,
-                        height=400,
+                        height=300,
                     ),
                 ]),
                 padding=15,
             ),
         )
         
-        # 添加所有元素到页面
-        self.page.add(
-            header,
-            status_section,
-            buttons_row,
-            log_card,
+        return ft.Container(
+            content=ft.Column([
+                header,
+                status_section,
+                buttons_row,
+                log_card,
+            ], width=700),
+            padding=10
         )
-        self.page.update()
     
+    def _on_close(self, e=None):
+        """关闭对话框"""
+        self.dialog.open = False
+        self.page.update()
+        
+        # 调用关闭回调
+        if self.on_close_callback:
+            self.on_close_callback()
+    
+    def _on_dialog_dismiss(self, e):
+        """对话框被关闭时的回调"""
+        self._on_close(e)
+    
+    def show(self):
+        """显示安装对话框"""
+        self.dialog.open = True
+        self.page.update()
+        
+        # 立即执行检测
+        threading.Thread(target=self.check_python_env).start()
+        
     def add_log(self, message, color="black"):
         """向日志区域添加消息"""
         self.log_view.controls.append(ft.Text(message, color=color, selectable=True))
@@ -352,57 +376,45 @@ class PythonInstallerApp:
             venv_path = Path("venv")
             if venv_path.exists():
                 self.add_log("移除现有的虚拟环境...")
-                try:
-                    import shutil
-                    shutil.rmtree("venv")
-                except Exception as e:
-                    self.add_log(f"❌ 移除现有虚拟环境失败: {str(e)}", color="red")
-                    self.update_status("创建虚拟环境失败", show_progress=False)
-                    self.create_venv_button.disabled = False
-                    self.page.update()
-                    return
+                import shutil
+                shutil.rmtree("venv")
             
             # 创建虚拟环境
-            try:
-                self.add_log(f"使用 {python312_path} 创建虚拟环境...")
+            self.add_log(f"使用 {python312_path} 创建虚拟环境...")
+            
+            # 运行venv模块创建虚拟环境
+            process = subprocess.Popen(
+                [python312_path, "-m", "venv", "venv"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                self.add_log("✅ 虚拟环境创建成功", color="green")
+                self.update_status("虚拟环境已创建，现在可以安装依赖", show_progress=False)
                 
-                # 运行venv模块创建虚拟环境
-                process = subprocess.Popen(
-                    [python312_path, "-m", "venv", "venv"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
+                # 启用安装依赖按钮
+                self.install_req_button.disabled = False
+                self.install_req_button.visible = True
+                
+                # 显示成功消息
+                self.page.dialog = ft.AlertDialog(
+                    title=ft.Text("虚拟环境已创建"),
+                    content=ft.Text("Python 环境已准备就绪！现在您可以选择安装依赖。"),
+                    actions=[
+                        ft.TextButton("关闭", on_click=lambda _: self.close_dialog()),
+                        ft.ElevatedButton("安装依赖", on_click=lambda _: self.close_dialog_and_pick_req()),
+                    ],
+                    actions_alignment=ft.MainAxisAlignment.END,
                 )
-                
-                stdout, stderr = process.communicate()
-                
-                if process.returncode == 0:
-                    self.add_log("✅ 虚拟环境创建成功", color="green")
-                    self.update_status("虚拟环境已创建，现在可以安装依赖", show_progress=False)
-                    
-                    # 启用安装依赖按钮
-                    self.install_req_button.disabled = False
-                    self.install_req_button.visible = True
-                    
-                    # 显示成功消息
-                    self.page.dialog = ft.AlertDialog(
-                        title=ft.Text("虚拟环境已创建"),
-                        content=ft.Text("Python 环境已准备就绪！现在您可以选择安装依赖。"),
-                        actions=[
-                            ft.TextButton("关闭", on_click=lambda _: self.close_dialog()),
-                            ft.ElevatedButton("安装依赖", on_click=lambda _: self.close_dialog_and_pick_req()),
-                        ],
-                        actions_alignment=ft.MainAxisAlignment.END,
-                    )
-                    self.page.dialog.open = True
-                    self.page.update()
-                else:
-                    error_msg = stderr or "未知错误"
-                    self.add_log(f"❌ 创建虚拟环境失败: {error_msg}", color="red")
-                    self.update_status("创建虚拟环境失败", show_progress=False)
-                    self.create_venv_button.disabled = False
-            except Exception as e:
-                self.add_log(f"❌ 创建虚拟环境时发生异常: {str(e)}", color="red")
+                self.page.dialog.open = True
+                self.page.update()
+            else:
+                error_msg = stderr or "未知错误"
+                self.add_log(f"❌ 创建虚拟环境失败: {error_msg}", color="red")
                 self.update_status("创建虚拟环境失败", show_progress=False)
                 self.create_venv_button.disabled = False
             
@@ -534,98 +546,109 @@ class PythonInstallerApp:
         
         # 更新pip
         self.add_log("正在更新pip...")
-        try:
-            upgrade_cmd = [
-                venv_python, "-m", "pip", "install", 
-                "-i", pip_index_url, 
-                "--upgrade", "pip"
-            ]
-            
-            process = subprocess.Popen(
-                upgrade_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            stdout, stderr = process.communicate()
-            
-            if process.returncode == 0:
-                self.add_log("✅ pip更新成功", color="green")
-            else:
-                self.add_log(f"⚠️ pip更新可能未成功完成: {stderr}", color="orange")
-        except Exception as e:
-            self.add_log(f"⚠️ pip更新过程中出现错误: {str(e)}", color="orange")
+        upgrade_cmd = [
+            venv_python, "-m", "pip", "install", 
+            "-i", pip_index_url, 
+            "--upgrade", "pip"
+        ]
+        
+        process = subprocess.Popen(
+            upgrade_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        stdout, stderr = process.communicate()
+        
+        if process.returncode == 0:
+            self.add_log("✅ pip更新成功", color="green")
+        else:
+            self.add_log(f"⚠️ pip更新可能未成功完成: {stderr}", color="orange")
         
         # 安装依赖
         self.add_log(f"开始安装依赖: {req_file_path}...")
         self.update_status("正在安装依赖，这可能需要几分钟...", show_progress=True)
         
-        try:
-            install_cmd = [
-                venv_pip, "install", 
-                "-i", pip_index_url, 
-                "-r", req_file_path
-            ]
+        install_cmd = [
+            venv_pip, "install", 
+            "-i", pip_index_url, 
+            "-r", req_file_path
+        ]
+        
+        process = subprocess.Popen(
+            install_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # 行缓冲
+            universal_newlines=True
+        )
+        
+        # 实时读取输出
+        for line in process.stdout:
+            line = line.strip()
+            if line:
+                if "ERROR" in line:
+                    self.add_log(line, color="red")
+                elif "WARNING" in line:
+                    self.add_log(line, color="orange")
+                elif "Successfully installed" in line:
+                    self.add_log(line, color="green")
+                else:
+                    # 过滤掉一些不太重要的输出
+                    if not line.startswith("Requirement already satisfied"):
+                        self.add_log(line)
+        
+        # 确保进程完成
+        returncode = process.wait()
+        
+        # 读取stderr
+        stderr = process.stderr.read()
+        
+        if returncode == 0:
+            self.add_log("✅ 依赖安装成功！", color="green")
+            self.update_status("Python环境和依赖已全部准备就绪", show_progress=False)
             
-            process = subprocess.Popen(
-                install_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # 行缓冲
-                universal_newlines=True
+            # 显示成功消息
+            self.page.dialog = ft.AlertDialog(
+                title=ft.Text("安装完成"),
+                content=ft.Text("所有依赖已成功安装！\n现在您可以关闭此窗口，继续使用MaiBot启动器。"),
+                actions=[
+                    ft.TextButton("关闭", on_click=lambda _: self.close_dialog()),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
             )
-            
-            # 实时读取输出
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    if "ERROR" in line:
-                        self.add_log(line, color="red")
-                    elif "WARNING" in line:
-                        self.add_log(line, color="orange")
-                    elif "Successfully installed" in line:
-                        self.add_log(line, color="green")
-                    else:
-                        # 过滤掉一些不太重要的输出
-                        if not line.startswith("Requirement already satisfied"):
-                            self.add_log(line)
-            
-            # 确保进程完成
-            returncode = process.wait()
-            
-            # 读取stderr
-            stderr = process.stderr.read()
-            
-            if returncode == 0:
-                self.add_log("✅ 依赖安装成功！", color="green")
-                self.update_status("Python环境和依赖已全部准备就绪", show_progress=False)
-                
-                # 显示成功消息
-                self.page.dialog = ft.AlertDialog(
-                    title=ft.Text("安装完成"),
-                    content=ft.Text("所有依赖已成功安装！\n现在您可以关闭此窗口，继续使用MaiBot启动器。"),
-                    actions=[
-                        ft.TextButton("关闭", on_click=lambda _: self.close_dialog()),
-                    ],
-                    actions_alignment=ft.MainAxisAlignment.END,
-                )
-                self.page.dialog.open = True
-            else:
-                self.add_log(f"❌ 依赖安装失败: {stderr}", color="red")
-                self.update_status("安装依赖失败", show_progress=False)
-        except Exception as e:
-            self.add_log(f"❌ 安装过程中发生异常: {str(e)}", color="red")
+            self.page.dialog.open = True
+        else:
+            self.add_log(f"❌ 依赖安装失败: {stderr}", color="red")
             self.update_status("安装依赖失败", show_progress=False)
         
         # 启用按钮
         self.install_req_button.disabled = False
         self.page.update()
 
-def main(page: ft.Page):
-    PythonInstallerApp(page)
+
+def show_python_installer(page: ft.Page, on_close_callback=None):
+    """显示Python安装器对话框"""
+    installer = PythonInstallerApp(page, on_close_callback)
+    installer.show()
+    return installer
+
 
 # 直接运行此脚本时启动应用
 if __name__ == "__main__":
+    def main(page: ft.Page):
+        page.title = "Python环境安装助手"
+        page.window.width = 800
+        page.window.height = 600
+        page.theme_mode = ft.ThemeMode.SYSTEM
+        
+        def on_click(e):
+            show_python_installer(page)
+            
+        page.add(
+            ft.ElevatedButton("打开Python安装器", on_click=on_click)
+        )
+    
     ft.app(target=main) 

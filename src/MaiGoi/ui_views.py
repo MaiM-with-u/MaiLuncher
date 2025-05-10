@@ -634,13 +634,23 @@ def create_main_view(page: ft.Page, app_state: "AppState") -> ft.View:
 def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
     """Creates the view for managing adapters (/adapters)."""
     # Import necessary functions
-    from .config_manager import save_config
+    from .config_manager import save_config, load_config
     from .utils import show_snackbar  # Removed run_script import
 
     # Import process management functions
     from .process_manager import start_managed_process, stop_managed_process
     import psutil  # To check if PID exists for status
 
+    # 重要：确保在页面初始化时从配置文件读取最新的适配器列表
+    try:
+        loaded_config = load_config(config_type="gui", base_dir=app_state.bot_base_dir)
+        if loaded_config and "adapters" in loaded_config:
+            # 只有当配置文件中确实有适配器配置时才更新
+            app_state.adapter_paths = loaded_config["adapters"]
+            print(f"[Adapters] 页面初始化时加载的适配器列表: {app_state.adapter_paths}")
+    except Exception as e:
+        print(f"[Adapters] 页面初始化时加载配置出错: {e}")
+    
     adapters_list_view = ft.ListView(expand=True, spacing=5)
 
     def update_adapters_list():
@@ -739,16 +749,28 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
             print(f"[Adapters] 准备移除适配器: {removed_path}")
             print(f"[Adapters] 移除后的适配器列表: {app_state.adapter_paths}")
             
-            if save_config(app_state.gui_config, base_dir=app_state.bot_base_dir):
+            if save_config(app_state.gui_config, config_type="gui", base_dir=app_state.bot_base_dir):
                 # 验证配置一致性
-                from .config_manager import verify_config_consistency
+                from .config_manager import verify_config_consistency, load_config
                 results = verify_config_consistency()
                 print("[Adapters] 移除后配置一致性验证结果:")
                 for name, path, exists in results:
                     print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
                 
+                # 重新从配置文件加载适配器列表，确保内存和文件同步
+                try:
+                    loaded_config = load_config(config_type="gui", base_dir=app_state.bot_base_dir)
+                    if loaded_config and "adapters" in loaded_config:
+                        app_state.adapter_paths = loaded_config["adapters"]
+                        print(f"[Adapters] 从配置重新加载的适配器列表: {app_state.adapter_paths}")
+                except Exception as load_error:
+                    print(f"[Adapters] 重新加载配置时出错: {load_error}")
+                
                 # 立即更新列表视图
                 update_adapters_list()
+                
+                # 强制更新整个页面
+                page.update()
                 show_snackbar(page, f"已移除: {removed_path}")
             else:
                 show_snackbar(page, "保存配置失败，未能移除", error=True)
@@ -861,22 +883,39 @@ def create_adapters_view(page: ft.Page, app_state: "AppState") -> ft.View:
         print(f"[Adapters] 添加后适配器列表: {app_state.adapter_paths}")
         print(f"[Adapters] 准备保存配置，gui_config['adapters']: {app_state.gui_config['adapters']}")
 
-        save_successful = save_config(app_state.gui_config, base_dir=app_state.bot_base_dir)
+        # 修复：添加缺少的config_type参数
+        save_successful = save_config(app_state.gui_config, config_type="gui", base_dir=app_state.bot_base_dir)
 
         print(f"[Adapters] 保存配置结果: {'成功' if save_successful else '失败'}")
         
         # 验证配置一致性
-        from .config_manager import verify_config_consistency
+        from .config_manager import verify_config_consistency, load_config
         results = verify_config_consistency()
         print("[Adapters] 保存后配置一致性验证结果:")
         for name, path, exists in results:
             print(f"  - {name}: {path} ({'存在' if exists else '不存在'})")
 
         if save_successful:
+            # 重新从配置文件加载适配器列表，确保内存和文件同步
+            try:
+                loaded_config = load_config(config_type="gui", base_dir=app_state.bot_base_dir)
+                if loaded_config and "adapters" in loaded_config:
+                    app_state.adapter_paths = loaded_config["adapters"]
+                    print(f"[Adapters] 从配置重新加载的适配器列表: {app_state.adapter_paths}")
+            except Exception as load_error:
+                print(f"[Adapters] 重新加载配置时出错: {load_error}")
+            
             new_adapter_path_field.value = ""  # Clear input field
+            
             # 立即更新列表视图
             update_adapters_list()
-            new_adapter_path_field.update()  # Update the input field visually
+            
+            # 强制更新UI元素
+            new_adapter_path_field.update()
+            adapters_list_view.update()
+            # 强制更新整个页面
+            page.update()
+            
             show_snackbar(page, "适配器已添加")
         else:
             show_snackbar(page, "保存配置失败", error=True)

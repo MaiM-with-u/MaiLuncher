@@ -230,42 +230,61 @@ def delete_meme_from_db(app_state: "AppState", meme_id: str):
         return False, "数据库未连接"
     
     try:
+        print(f"[MemeManager] 开始删除表情包，ID: {meme_id}")
         # 1. 首先获取表情包信息，确保我们有文件路径
         emoji_collection = app_state.gui_db.emoji
+        
+        # 检查meme_id格式，确保是有效的ObjectId
+        try:
+            object_id = ObjectId(meme_id)
+            print(f"[MemeManager] 有效的ObjectId: {object_id}")
+        except Exception as id_err:
+            print(f"[MemeManager] 无效的ObjectId格式: {meme_id}, 错误: {id_err}")
+            return False, "无效的表情包ID格式"
+            
         meme_doc = emoji_collection.find_one({"_id": ObjectId(meme_id)})
         
         if not meme_doc:
+            print(f"[MemeManager] 未找到ID为 {meme_id} 的表情包")
             return False, "未找到表情包"
+            
+        print(f"[MemeManager] 找到表情包文档: {meme_doc.get('description', '无描述')}")
         
         # 2. 获取文件路径
         file_relative_path = meme_doc.get("full_path", "")
+        print(f"[MemeManager] 表情包文件相对路径: {file_relative_path}")
         
         # 3. 从数据库中删除记录
         result = emoji_collection.delete_one({"_id": ObjectId(meme_id)})
         
         if result.deleted_count > 0:
-            print(f"[MemeManager] Meme ID {meme_id} deleted from database.")
+            print(f"[MemeManager] 表情包ID {meme_id} 已从数据库中删除，deleted_count={result.deleted_count}")
             
             # 4. 删除文件（如果存在）
             if file_relative_path:
                 # 构建完整文件路径
                 full_file_path = Path(app_state.mmc_path) / file_relative_path
+                print(f"[MemeManager] 尝试删除文件: {full_file_path}")
+                
                 if full_file_path.exists():
                     try:
                         full_file_path.unlink()
-                        print(f"[MemeManager] Deleted file: {full_file_path}")
+                        print(f"[MemeManager] 成功删除文件: {full_file_path}")
                     except Exception as file_e:
-                        print(f"[MemeManager] Warning: Could not delete file {full_file_path}: {file_e}")
+                        print(f"[MemeManager] 警告: 无法删除文件 {full_file_path}: {file_e}")
                         # 注意：我们仍然认为操作成功，因为数据库中的记录已被删除
                 else:
-                    print(f"[MemeManager] Warning: File does not exist: {full_file_path}")
+                    print(f"[MemeManager] 警告: 文件不存在: {full_file_path}")
             
             return True, "表情包已删除"
         else:
+            print(f"[MemeManager] 数据库删除失败，deleted_count={result.deleted_count}")
             return False, "数据库删除失败"
             
     except Exception as e:
-        print(f"[MemeManager] Error deleting meme from database: {e}")
+        print(f"[MemeManager] 删除表情包时出错: {e}")
+        import traceback
+        traceback.print_exc()
         return False, f"删除表情包失败: {e}"
 
 def create_meme_card(meme_doc: dict, page: ft.Page, app_state: "AppState", on_update_refresh_grid):
@@ -413,22 +432,31 @@ def create_meme_card(meme_doc: dict, page: ft.Page, app_state: "AppState", on_up
         )
         
         def close_confirm_dialog():
-            page.dialog = confirm_dialog
+            print(f"[MemeManager] 关闭确认对话框")
+            # 添加到overlay中才能正确关闭
+            if confirm_dialog not in page.overlay:
+                page.overlay.append(confirm_dialog)
             confirm_dialog.open = False
             page.update()
             
         def confirm_delete_meme():
+            print(f"[MemeManager] 确认删除表情包，ID: {meme_id}")
             close_confirm_dialog()
             success, message = delete_meme_from_db(app_state, meme_id)
             if success:
+                print(f"[MemeManager] 表情包删除成功，准备刷新网格")
                 # 刷新表情包网格
                 on_update_refresh_grid()
                 show_snackbar(page, message)
             else:
+                print(f"[MemeManager] 表情包删除失败: {message}")
                 show_snackbar(page, message, error=True)
         
         # 显示确认对话框
-        page.dialog = confirm_dialog
+        print(f"[MemeManager] 显示删除确认对话框，表情包ID: {meme_id}")
+        # 确保对话框添加到页面的overlay中
+        if confirm_dialog not in page.overlay:
+            page.overlay.append(confirm_dialog)
         confirm_dialog.open = True
         page.update()
     

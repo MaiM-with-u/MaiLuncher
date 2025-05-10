@@ -21,7 +21,7 @@ from src.MaiGoi.ui_views import (
 from src.MaiGoi.config_manager import load_config, save_config # Removed get_config_path, verify_config_consistency
 from src.MaiGoi.ui_console_view import create_console_view
 from src.MaiGoi.ui_settings_view import create_settings_view
-from src.MaiGoi.db_connector import GUIDBWrapper, close_db_connection # <-- 导入数据库相关
+from src.MaiGoi.db_connector import GUIDBWrapper, close_db_connection, full_database_reset # <-- 导入数据库相关
 # from src.MaiGoi.config_manager import verify_config_consistency # Removed
 
 from loguru import logger
@@ -184,178 +184,247 @@ def view_pop(e: ft.ViewPopEvent):
 
 
 def main(page: ft.Page):
-    # --- 步骤 0: 设置工作目录为项目根目录 ---
-    project_root = Path(__file__).resolve().parent
-    os.chdir(project_root)
-    logger.info(f"工作目录已设置为: {project_root}")
+    # 全局异常处理器，防止未捕获的异常导致整个程序崩溃
+    def global_exception_handler(type, value, traceback):
+        error_message = f"未捕获的异常: {type.__name__}: {value}"
+        logger.error(error_message)
+        logger.error("异常堆栈:", exc_info=(type, value, traceback))
+        # 显示错误给用户
+        try:
+            # 修正：使用 page.snack_bar 属性而不是 show_snack_bar 方法
+            page.snack_bar = ft.SnackBar(
+                ft.Text(f"程序错误: {error_message}", color=ft.Colors.WHITE), 
+                bgcolor=ft.Colors.RED_ACCENT_700,
+                open=True
+            )
+            page.update() # 需要手动更新页面
+        except Exception as e:
+            logger.error(f"在错误处理过程中发生额外异常: {e}")
 
-    # --- 步骤 1: 加载 GUI 配置 ---
-    # 路径将是 <project_root>/config/gui_config.toml
-    # 如果 config 目录或 gui_config.toml 不存在，load_config 会创建它们（仅对GUI）
-    app_state.gui_config = load_config(config_type="gui") # base_dir is not needed for GUI
-    if not app_state.gui_config:
-        logger.error("无法加载GUI配置，将使用空配置。应用可能无法正常运行。")
-        app_state.gui_config = {} # 确保它是一个字典
+    # 安装全局异常处理器
+    sys.excepthook = global_exception_handler
 
-    # 从GUI配置获取 bot_script_path
-    mmc_script_path = app_state.gui_config.get("bot_script_path", "bot.py") # 默认 "bot.py"
-
-    # --- 步骤 2: 解析 mmc_path (bot脚本的根目录) ---
-    resolved_mmc_script_path = Path(mmc_script_path).resolve()
-    mmc_path = resolved_mmc_script_path.parent  # 获取脚本所在目录作为根目录
-    
-    app_state.mmc_path = mmc_path  # 存储 mmc_path
-    app_state.bot_script_path = str(resolved_mmc_script_path)  # 存储解析后的绝对路径
-    logger.info(f"MMC路径 (bot脚本根目录) 设置为: {mmc_path}")
-    logger.info(f"Bot脚本路径设置为: {app_state.bot_script_path}")
-
-    # --- 步骤 3: 加载特定于 MMC 的配置 (不创建文件/目录) ---
-    # Bot 配置
-    app_state.bot_config = load_config(config_type="bot", base_dir=mmc_path)
-    if not app_state.bot_config:
-        logger.warning(f"未找到Bot配置文件 (期望路径: {mmc_path / 'config' / 'bot_config.toml'}) 或加载失败。")
-    else:
-        logger.info(f"Bot配置从 {mmc_path / 'config' / 'bot_config.toml'} 加载成功。")
-        
-    # LPMM 配置
-    app_state.lpmm_config = load_config(config_type="lpmm", base_dir=mmc_path)
-    if not app_state.lpmm_config:
-        logger.warning(f"未找到LPMM配置文件 (期望路径: {mmc_path / 'config' / 'lpmm_config.toml'}) 或加载失败。")
-    else:
-        logger.info(f"LPMM配置从 {mmc_path / 'config' / 'lpmm_config.toml'} 加载成功。")
-
-    # .env 文件路径
-    env_file_path = mmc_path / ".env"
-    if env_file_path.is_file():
-        logger.info(f".env 文件存在于: {env_file_path}")
-    else:
-        logger.warning(f".env 文件未找到于: {env_file_path}")
-    
-    # --- 日志设置 (可以移到更早的位置，如果需要记录配置加载过程) ---
-    # setup_logging(app_state.mmc_path) # 如果 setup_logging 依赖 mmc_path
-
-    interest_log_dir = mmc_path / "logs" / "interest" # 日志目录基于 mmc_path
     try:
-        interest_log_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"确保兴趣监控日志目录存在: {interest_log_dir}")
-        
-        interest_log_file = interest_log_dir / "interest_history.log"
-        if interest_log_file.exists():
-            interest_log_file.unlink() # 删除旧日志
-            logger.info(f"已删除旧的兴趣日志文件: {interest_log_file}")
-    except Exception as e:
-        logger.exception(f"处理兴趣日志目录/文件时出错 {interest_log_dir}: {e}")
+        # --- 步骤 0: 设置工作目录为项目根目录 ---
+        project_root = Path(__file__).resolve().parent
+        os.chdir(project_root)
+        logger.info(f"工作目录已设置为: {project_root}")
 
-    # --- 其他UI和应用状态设置 ---
-    # 使用 app_state.gui_config, app_state.bot_config 等进行后续设置
-    app_state.adapter_paths = app_state.gui_config.get("adapters", []).copy()
-    logger.info(f"从GUI配置加载的适配器路径: {app_state.adapter_paths}")
+        # --- 步骤 1: 加载 GUI 配置 ---
+        # 路径将是 <project_root>/config/gui_config.toml
+        # 如果 config 目录或 gui_config.toml 不存在，load_config 会创建它们（仅对GUI）
+        app_state.gui_config = load_config(config_type="gui") # base_dir is not needed for GUI
+        if not app_state.gui_config:
+            logger.error("无法加载GUI配置，将使用空配置。应用可能无法正常运行。")
+            app_state.gui_config = {} # 确保它是一个字典
 
-    python_path_from_config = app_state.gui_config.get("python_path")
-    if python_path_from_config:
-        py_path_candidate = Path(python_path_from_config)
-        if not py_path_candidate.is_absolute():
-            # 假设相对路径是相对于 mmc_path
-            py_path_candidate = mmc_path / py_path_candidate
+        # 从GUI配置获取 bot_script_path
+        mmc_script_path = app_state.gui_config.get("bot_script_path", "bot.py") # 默认 "bot.py"
+
+        # --- 步骤 2: 解析 mmc_path (bot脚本的根目录) ---
+        resolved_mmc_script_path = Path(mmc_script_path).resolve()
+        mmc_path = resolved_mmc_script_path.parent  # 获取脚本所在目录作为根目录
         
-        resolved_py_path = py_path_candidate.resolve()
-        if resolved_py_path.exists(): # 检查可执行文件是否存在
-            app_state.python_path = str(resolved_py_path)
-            logger.info(f"Python路径从配置加载并解析: {app_state.python_path}")
+        app_state.mmc_path = mmc_path  # 存储 mmc_path
+        app_state.bot_script_path = str(resolved_mmc_script_path)  # 存储解析后的绝对路径
+        logger.info(f"MMC路径 (bot脚本根目录) 设置为: {mmc_path}")
+        logger.info(f"Bot脚本路径设置为: {app_state.bot_script_path}")
+
+        # --- 步骤 3: 加载特定于 MMC 的配置 (不创建文件/目录) ---
+        # Bot 配置
+        app_state.bot_config = load_config(config_type="bot", base_dir=mmc_path)
+        if not app_state.bot_config:
+            logger.warning(f"未找到Bot配置文件 (期望路径: {mmc_path / 'config' / 'bot_config.toml'}) 或加载失败。")
         else:
-            logger.warning(f"配置中的Python路径 '{python_path_from_config}' (解析为 '{resolved_py_path}') 无效或未找到。")
-            app_state.python_path = "" # 重置为提示
-    else:
-        logger.info("配置中未找到Python路径。如果需要，将提示用户。")
-        app_state.python_path = ""
+            logger.info(f"Bot配置从 {mmc_path / 'config' / 'bot_config.toml'} 加载成功。")
+            
+        # LPMM 配置
+        app_state.lpmm_config = load_config(config_type="lpmm", base_dir=mmc_path)
+        if not app_state.lpmm_config:
+            logger.warning(f"未找到LPMM配置文件 (期望路径: {mmc_path / 'config' / 'lpmm_config.toml'}) 或加载失败。")
+        else:
+            logger.info(f"LPMM配置从 {mmc_path / 'config' / 'lpmm_config.toml'} 加载成功。")
 
-    app_state.script_dir = str(project_root / "src") # 或其他相关脚本目录
-    logger.info(f"脚本目录在状态中设置为: {app_state.script_dir}")
-
-    # --- Setup File Picker --- #
-    app_state.file_picker = ft.FilePicker()
-    page.overlay.append(app_state.file_picker)
-    logger.info("FilePicker created and added to page overlay.")
-
-    page.title = "MaiBot 启动器"
-    page.window.width = 1400
-    page.window.height = 1000
-    page.vertical_alignment = ft.MainAxisAlignment.START
-    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
-
-    saved_theme = app_state.gui_config.get("theme", "System").upper()
-    try:
-        page.theme_mode = ft.ThemeMode[saved_theme]
-        logger.info(f"Applied theme from config: {page.theme_mode}")
-    except KeyError:
-        logger.warning(f"Invalid theme '{saved_theme}' in config. Falling back to System.")
-        page.theme_mode = ft.ThemeMode.SYSTEM
+        # .env 文件路径
+        env_file_path = mmc_path / ".env"
+        if env_file_path.is_file():
+            logger.info(f".env 文件存在于: {env_file_path}")
+        else:
+            logger.warning(f".env 文件未找到于: {env_file_path}")
         
-    MAIN_STYLE_COLOR = ft.Colors.ORANGE_ACCENT_200
-    MAIN_STYLE_COLOR_DARK = ft.Colors.INDIGO_800
-    SURFACE_COLOR_DARK = ft.Colors.INDIGO_600
-    SURFACE_COLOR = ft.Colors.ORANGE_50
-    SEC_MAIN_SHAPE_COLOR = ft.Colors.PURPLE_200
-    SEC_MAIN_SHAPE_COLOR_DARK = ft.Colors.BLUE_900
+        # --- 日志设置 (可以移到更早的位置，如果需要记录配置加载过程) ---
+        # setup_logging(app_state.mmc_path) # 如果 setup_logging 依赖 mmc_path
 
-    dark_theme = ft.Theme(
-        color_scheme_seed=MAIN_STYLE_COLOR_DARK, 
-        color_scheme=ft.ColorScheme(
-            tertiary=MAIN_STYLE_COLOR_DARK,
-            secondary=SEC_MAIN_SHAPE_COLOR_DARK,
-            inverse_surface=SURFACE_COLOR_DARK,
+        interest_log_dir = mmc_path / "logs" / "interest" # 日志目录基于 mmc_path
+        try:
+            interest_log_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"确保兴趣监控日志目录存在: {interest_log_dir}")
+            
+            interest_log_file = interest_log_dir / "interest_history.log"
+            if interest_log_file.exists():
+                interest_log_file.unlink() # 删除旧日志
+                logger.info(f"已删除旧的兴趣日志文件: {interest_log_file}")
+        except Exception as e:
+            logger.exception(f"处理兴趣日志目录/文件时出错 {interest_log_dir}: {e}")
+
+        # --- 其他UI和应用状态设置 ---
+        # 使用 app_state.gui_config, app_state.bot_config 等进行后续设置
+        app_state.adapter_paths = app_state.gui_config.get("adapters", []).copy()
+        logger.info(f"从GUI配置加载的适配器路径: {app_state.adapter_paths}")
+
+        python_path_from_config = app_state.gui_config.get("python_path")
+        if python_path_from_config:
+            py_path_candidate = Path(python_path_from_config)
+            if not py_path_candidate.is_absolute():
+                # 假设相对路径是相对于 mmc_path
+                py_path_candidate = mmc_path / py_path_candidate
+            
+            resolved_py_path = py_path_candidate.resolve()
+            if resolved_py_path.exists(): # 检查可执行文件是否存在
+                app_state.python_path = str(resolved_py_path)
+                logger.info(f"Python路径从配置加载并解析: {app_state.python_path}")
+            else:
+                logger.warning(f"配置中的Python路径 '{python_path_from_config}' (解析为 '{resolved_py_path}') 无效或未找到。")
+                app_state.python_path = "" # 重置为提示
+        else:
+            logger.info("配置中未找到Python路径。如果需要，将提示用户。")
+            app_state.python_path = ""
+
+        app_state.script_dir = str(project_root / "src") # 或其他相关脚本目录
+        logger.info(f"脚本目录在状态中设置为: {app_state.script_dir}")
+
+        # --- Setup File Picker --- #
+        app_state.file_picker = ft.FilePicker()
+        page.overlay.append(app_state.file_picker)
+        logger.info("FilePicker created and added to page overlay.")
+
+        page.title = "MaiBot 启动器"
+        page.window.width = 1400
+        page.window.height = 1000
+        page.vertical_alignment = ft.MainAxisAlignment.START
+        page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+
+        saved_theme = app_state.gui_config.get("theme", "System").upper()
+        try:
+            page.theme_mode = ft.ThemeMode[saved_theme]
+            logger.info(f"Applied theme from config: {page.theme_mode}")
+        except KeyError:
+            logger.warning(f"Invalid theme '{saved_theme}' in config. Falling back to System.")
+            page.theme_mode = ft.ThemeMode.SYSTEM
+            
+        MAIN_STYLE_COLOR = ft.Colors.ORANGE_ACCENT_200
+        MAIN_STYLE_COLOR_DARK = ft.Colors.INDIGO_800
+        SURFACE_COLOR_DARK = ft.Colors.INDIGO_600
+        SURFACE_COLOR = ft.Colors.ORANGE_50
+        SEC_MAIN_SHAPE_COLOR = ft.Colors.PURPLE_200
+        SEC_MAIN_SHAPE_COLOR_DARK = ft.Colors.BLUE_900
+
+        dark_theme = ft.Theme(
+            color_scheme_seed=MAIN_STYLE_COLOR_DARK, 
+            color_scheme=ft.ColorScheme(
+                tertiary=MAIN_STYLE_COLOR_DARK,
+                secondary=SEC_MAIN_SHAPE_COLOR_DARK,
+                inverse_surface=SURFACE_COLOR_DARK,
+            )
         )
-    )
-    
-    light_theme = ft.Theme(
-        color_scheme_seed=MAIN_STYLE_COLOR, 
-        color_scheme=ft.ColorScheme(
-            tertiary=MAIN_STYLE_COLOR,
-            secondary=SEC_MAIN_SHAPE_COLOR,
-            inverse_surface=SURFACE_COLOR,
+        
+        light_theme = ft.Theme(
+            color_scheme_seed=MAIN_STYLE_COLOR, 
+            color_scheme=ft.ColorScheme(
+                tertiary=MAIN_STYLE_COLOR,
+                secondary=SEC_MAIN_SHAPE_COLOR,
+                inverse_surface=SURFACE_COLOR,
+            )
         )
-    )
+        
+        page.theme = light_theme
+        page.dark_theme = dark_theme
+
+        if not hasattr(app_state, 'bot_base_dir'):
+            app_state.bot_base_dir = mmc_path 
+            logger.info(f"Stored bot_base_dir in AppState (fallback): {app_state.bot_base_dir}")
+
+        # --- 初始化数据库访问 --- #
+        # 修改：添加异常处理，确保数据库连接失败不会导致程序崩溃
+        try:
+            # 使用包装器实现更彻底的懒加载，并能在需要时重新评估 mmc_path
+            app_state.gui_db = GUIDBWrapper(lambda: app_state.mmc_path)
+            logger.info(f"数据库访问已通过 GUIDBWrapper 设置 (与 app_state.mmc_path: {app_state.mmc_path} 关联)")
+            
+            # 添加：尝试一次连接并输出状态
+            connection_status = app_state.gui_db.get_connection_status()
+            if connection_status["connected"]:
+                logger.info("数据库连接测试成功")
+            else:
+                logger.warning(f"数据库连接测试失败: {connection_status['error']}")
+                # 显示一个snackbar提示用户数据库连接失败
+                # 修正：使用 page.snack_bar 属性而不是 show_snack_bar 方法
+                page.snack_bar = ft.SnackBar(
+                    ft.Text(f"数据库连接失败: {connection_status['error']}。表情包功能将不可用。", color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.AMBER_700,
+                    action="忽略",
+                    open=True
+                )
+                page.update() # 需要手动更新页面
+        except Exception as db_init_error:
+            logger.error(f"初始化数据库时出错: {db_init_error}")
+            # 捕获到异常，但不要让程序崩溃
+            # 显示警告但继续运行程序
+            # 修正：使用 page.snack_bar 属性而不是 show_snack_bar 方法
+            page.snack_bar = ft.SnackBar(
+                ft.Text(f"数据库初始化失败: {db_init_error}。表情包功能将不可用。", color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.RED_ACCENT_700,
+                action="忽略",
+                open=True
+            )
+            page.update() # 需要手动更新页面
+            # 确保app_state.gui_db有一个值，即使是None
+            app_state.gui_db = None
+
+        page.padding = 0
+
+        page.on_route_change = route_change
+        page.on_view_pop = view_pop
+
+        page.on_disconnect = lambda e: handle_disconnect(page, app_state, e)
+        logger.info("Registered page.on_disconnect handler.")
+
+        page.window_prevent_close = True
+
+        page.go(page.route if page.route else "/")
     
-    page.theme = light_theme
-    page.dark_theme = dark_theme
-
-    if not hasattr(app_state, 'bot_base_dir'):
-        app_state.bot_base_dir = mmc_path 
-        logger.info(f"Stored bot_base_dir in AppState (fallback): {app_state.bot_base_dir}")
-
-    # --- 初始化数据库访问 --- #
-    # mmc_path 此时已经解析完毕并存储在 app_state.mmc_path 中
-    # app_state.gui_db = get_gui_db(app_state.mmc_path) # 直接获取db实例，如果需要立即使用
-    # 或者使用包装器实现更彻底的懒加载，并能在需要时重新评估 mmc_path (如果它可能改变)
-    app_state.gui_db = GUIDBWrapper(lambda: app_state.mmc_path)
-    logger.info(f"数据库访问已通过 GUIDBWrapper 设置 (与 app_state.mmc_path: {app_state.mmc_path} 关联)")
-    # 你可以在这里尝试一次数据库连接，以尽早发现问题
-    # try:
-    #     if app_state.gui_db is not None:
-    #        app_state.gui_db.command('ping') # 尝试ping数据库
-    #        logger.info("成功 ping 数据库服务器。")
-    # except Exception as e:
-    #    logger.error(f"初始化时 ping 数据库失败: {e}")
-
-    page.padding = 0
-
-    page.on_route_change = route_change
-    page.on_view_pop = view_pop
-
-    page.on_disconnect = lambda e: handle_disconnect(page, app_state, e)
-    logger.info("Registered page.on_disconnect handler.")
-
-    page.window_prevent_close = True
-
-    page.go(page.route if page.route else "/")
+    except Exception as e:
+        # 捕获setup过程中的任何异常
+        error_message = f"程序初始化失败: {e}"
+        logger.error(error_message, exc_info=True)
+        # 向用户显示错误，但不崩溃
+        page.add(
+            ft.Column([
+                ft.Text("程序初始化失败", size=24, color=ft.Colors.RED),
+                ft.Text(str(e), color=ft.Colors.RED),
+                ft.Text("请检查日志获取更多信息", italic=True),
+                ft.ElevatedButton("重试", on_click=lambda _: page.window.close())
+            ], alignment=ft.MainAxisAlignment.CENTER)
+        )
+        # 记录错误日志
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
     print("正在启动中......")
-    ft.app(
-        target=main,
-        port=8077
-    )
-    logging.info("Flet app exited. atexit handler should run next.")
+    try:
+        ft.app(
+            target=main,
+            port=11451
+        )
+        logging.info("Flet app exited. atexit handler should run next.")
+    except Exception as e:
+        print(f"程序启动失败: {e}")
+        # 记录错误日志
+        logging.error(f"程序启动失败: {e}", exc_info=True)
+        # 延迟终止程序，以便用户能看到错误信息
+        import time
+        time.sleep(5)
 
 

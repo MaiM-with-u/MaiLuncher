@@ -8,10 +8,12 @@ from .state import AppState
 from .utils import show_snackbar  # Assuming show_snackbar is in utils
 from .toml_form_generator import create_toml_form, load_bot_config, get_bot_config_path
 from .config_manager import load_config, save_config
-from .ui_env_editor import create_env_editor_page_content
+from .ui_env_editor import create_env_editor_page_content, load_env_data
 from .db_connector import full_database_reset # 修改导入
 from .mmc_downloader import show_mmc_downloader  # 添加导入新模块
 
+# 添加一个全局变量来标记是否需要刷新配置
+CONFIG_NEEDS_REFRESH = False
 
 def save_bot_config(page: ft.Page, app_state: AppState, new_config_data: dict):
     """将修改后的 Bot 配置保存回文件。"""
@@ -224,40 +226,66 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
         show_mmc_downloader(page)
         
     def install_python(e):
-        # 打开Python安装助手窗口
+        # 改为直接在当前窗口中显示Python安装助手对话框
         try:
-            import subprocess
-            from pathlib import Path
+            # 导入Python安装器模块
+            from .python_installer import show_python_installer
             
-            # 获取python_installer.py的绝对路径
-            installer_script = Path(__file__).parent / "python_installer.py"
+            # 直接在当前页面显示Python安装器对话框
+            show_python_installer(page)
             
-            # 启动Python安装助手
-            if installer_script.exists():
-                # 使用系统的python来运行安装助手
-                process = subprocess.Popen(
-                    ["python", str(installer_script)],
-                    shell=True,
-                    # 不需要捕获输出
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                show_snackbar(page, "Python安装助手已启动")
-            else:
-                show_snackbar(page, f"未找到Python安装助手脚本: {installer_script}", error=True)
         except Exception as ex:
             show_snackbar(page, f"启动Python安装助手失败: {str(ex)}", error=True)
+            import traceback
+            traceback.print_exc()
 
     # --- Function to load Bot config editor (Original TOML editor) ---
     def show_bot_config_editor(e=None):
+        global CONFIG_NEEDS_REFRESH
         nonlocal current_config_data
         print("[Settings] Loading Bot Config Editor")
         try:
-            current_bot_config = load_config(config_type="bot", base_dir=app_state.bot_base_dir)
+            # 检查是否需要强制刷新
+            if CONFIG_NEEDS_REFRESH:
+                print("[Settings] 检测到配置变更，强制重新加载")
+                # 确保使用最新的 app_state.bot_base_dir
+                current_bot_config = load_config(config_type="bot", base_dir=app_state.bot_base_dir)
+                CONFIG_NEEDS_REFRESH = False  # 重置标记
+            else:
+                current_bot_config = load_config(config_type="bot", base_dir=app_state.bot_base_dir)
+            
             if not current_bot_config:
                 if not app_state.bot_base_dir:
                     raise ValueError("Bot base directory is not set. Cannot load bot config.")
-                raise ValueError(f"Bot config could not be loaded from {app_state.bot_base_dir / 'config' / 'bot_config.toml'}.")
+                
+                # 尝试多种编码方式读取文件
+                config_path = app_state.bot_base_dir / 'config' / 'bot_config.toml'
+                encodings_to_try = ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']
+                config_content = None
+                
+                print(f"[Settings] 尝试以多种编码读取配置文件: {config_path}")
+                for encoding in encodings_to_try:
+                    try:
+                        with open(config_path, 'r', encoding=encoding) as f:
+                            config_content = f.read()
+                        print(f"[Settings] 成功使用编码 {encoding} 读取文件")
+                        # 尝试解析TOML
+                        try:
+                            parsed_config = tomlkit.parse(config_content)
+                            print(f"[Settings] 成功使用编码 {encoding} 解析TOML")
+                            current_bot_config = parsed_config
+                            break
+                        except Exception as parse_err:
+                            print(f"[Settings] 使用编码 {encoding} 解析TOML失败: {parse_err}")
+                            continue
+                    except Exception as read_err:
+                        print(f"[Settings] 使用编码 {encoding} 读取文件失败: {read_err}")
+                        continue
+                
+                if not current_bot_config:
+                    # 如果所有编码都失败，则显示错误
+                    raise ValueError(f"尝试多种编码均无法加载配置文件: {config_path}")
+            
             current_config_data = current_bot_config # Keep reference if needed elsewhere
             content_area.controls.clear()
 
@@ -315,10 +343,19 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
 
     # --- Function to load LPMM config editor ---
     def show_lpmm_editor(e=None):
+        global CONFIG_NEEDS_REFRESH
         nonlocal current_config_data
         print("[Settings] Loading LPMM Config Editor")
         try:
-            lpmm_config = load_config(config_type="lpmm", base_dir=app_state.bot_base_dir)
+            # 检查是否需要强制刷新
+            if CONFIG_NEEDS_REFRESH:
+                print("[Settings] 检测到配置变更，强制重新加载")
+                # 确保使用最新的 app_state.bot_base_dir
+                lpmm_config = load_config(config_type="lpmm", base_dir=app_state.bot_base_dir)
+                CONFIG_NEEDS_REFRESH = False  # 重置标记
+            else:
+                lpmm_config = load_config(config_type="lpmm", base_dir=app_state.bot_base_dir)
+            
             if not lpmm_config:
                 if not app_state.bot_base_dir:
                     raise ValueError("Bot base directory is not set. Cannot load LPMM config.")
@@ -351,8 +388,14 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
 
     # --- Function to load .env editor ---
     def show_env_editor(e=None):
+        global CONFIG_NEEDS_REFRESH
         # No config data to manage here, it handles its own save
         print("[Settings] Loading .env Editor")
+        
+        if CONFIG_NEEDS_REFRESH:
+            print("[Settings] 检测到配置变更，强制重新加载 .env 编辑器")
+            CONFIG_NEEDS_REFRESH = False  # 重置标记
+        
         content_area.controls.clear()
         env_editor_content = create_env_editor_page_content(page, app_state)
         content_area.controls.append(env_editor_content)
@@ -361,6 +404,12 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
 
     # --- Function to load GUI settings editor ---
     def show_gui_settings(e=None):
+        global CONFIG_NEEDS_REFRESH
+        # 检查是否需要强制刷新
+        if CONFIG_NEEDS_REFRESH:
+            print("[Settings] 检测到配置变更，强制重新加载 GUI 设置")
+            CONFIG_NEEDS_REFRESH = False  # 重置标记
+        
         # GUI config is simpler, might not need full form generator
         # We'll load it directly from app_state and save app_state.gui_config
         print("[Settings] Loading GUI Settings Editor")
@@ -494,6 +543,7 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
         )
 
         def on_bot_path_change(e):
+            global CONFIG_NEEDS_REFRESH
             new_path = e.control.value.strip()
             saved = False
             if new_path:
@@ -509,7 +559,9 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                         if bot_script_abs_path.is_file():
                             # 新的 bot.py 路径有效，更新 mmc_path
                             app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
-                            print(f"[Settings] mmc_path 已更新: {app_state.mmc_path}")
+                            # 重要：同时更新 bot_base_dir
+                            app_state.bot_base_dir = bot_script_abs_path.parent
+                            print(f"[Settings] mmc_path 和 bot_base_dir 已更新: {app_state.mmc_path}")
                             
                             # 检查并创建 config 目录 (基于新的 mmc_path)
                             config_dir = Path(app_state.mmc_path) / "config"
@@ -519,11 +571,41 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                                     print(f"[Settings] 已创建 config 目录: {config_dir}")
                                 except Exception as e:
                                     print(f"[Settings] 创建 config 目录失败: {e}")
-                            full_database_reset(getattr(app_state, 'db', None)) 
+                            
+                            # ---- 添加：重载配置文件 ---- #
+                            # 1. 重载 bot_config.toml
+                            app_state.bot_config = load_config(config_type="bot", base_dir=app_state.mmc_path)
+                            print(f"[Settings] 重载 bot_config: {'成功' if app_state.bot_config else '失败'}")
+                            
+                            # 2. 重载 lpmm_config.toml
+                            app_state.lpmm_config = load_config(config_type="lpmm", base_dir=app_state.mmc_path)
+                            print(f"[Settings] 重载 lpmm_config: {'成功' if app_state.lpmm_config else '失败'}")
+                            
+                            # 3. 检查 .env 文件
+                            env_path = Path(app_state.mmc_path) / ".env"
+                            env_variables = load_env_data(env_path)
+                            print(f"[Settings] 检查 .env 文件: {'找到 ' + str(len(env_variables)) + ' 个变量' if env_variables else '未找到或为空'}")
+                            
+                            # 4. 重置数据库连接 (已有代码)
+                            full_database_reset(getattr(app_state, 'db', None))
+                            
+                            # 5. 设置刷新标记
+                            CONFIG_NEEDS_REFRESH = True
+                            print("[Settings] 设置配置需要刷新标记")
                         else:
                             print(f"[Settings] 警告: 文件 {bot_script_abs_path} 不存在，但仍使用其父目录作为 mmc_path")
                             app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
+                            # 重要：同时更新 bot_base_dir
+                            app_state.bot_base_dir = bot_script_abs_path.parent
+                            print(f"[Settings] mmc_path 和 bot_base_dir 已更新 (文件不存在): {app_state.mmc_path}")
+                            
+                            # 即使文件不存在，也尝试重载配置
+                            app_state.bot_config = load_config(config_type="bot", base_dir=app_state.mmc_path)
+                            app_state.lpmm_config = load_config(config_type="lpmm", base_dir=app_state.mmc_path)
                             full_database_reset(getattr(app_state, 'db', None))
+                            
+                            # 设置刷新标记
+                            CONFIG_NEEDS_REFRESH = True
                     except Exception as e:
                         print(f"[Settings] 更新 mmc_path 时出错: {e}")
                     
@@ -538,12 +620,23 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     
                     # 重置 mmc_path 到当前工作目录 (或者一个更合适的默认值)
                     app_state.mmc_path = str(Path(".").resolve()) # 改为 mmc_path
-                    print(f"[Settings] 已重置 mmc_path: {app_state.mmc_path}")
+                    # 重要：同时更新 bot_base_dir
+                    app_state.bot_base_dir = Path(".").resolve()
+                    print(f"[Settings] mmc_path 和 bot_base_dir 已重置: {app_state.mmc_path}")
+                    
+                    # ---- 添加：重载配置文件 ---- #
+                    app_state.bot_config = load_config(config_type="bot", base_dir=app_state.mmc_path)
+                    app_state.lpmm_config = load_config(config_type="lpmm", base_dir=app_state.mmc_path)
+                    
                     full_database_reset(getattr(app_state, 'db', None)) 
                     
                     print("[Settings] MaiCore 脚本路径已清除, 恢复默认: bot.py")
                     trigger_auto_save() # Auto-save
                     saved = True
+                    
+                    # 设置刷新标记
+                    CONFIG_NEEDS_REFRESH = True
+
             # Optionally provide feedback (e.g., subtle indicator or log)
             if saved:
                  print("[Settings] Auto-saved bot_script_path change.")
@@ -553,6 +646,7 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
 
         # (Optional) Add a file picker for bot.py
         def on_bot_script_picker_result(e: ft.FilePickerResultEvent):
+            global CONFIG_NEEDS_REFRESH
             if e.files:
                 chosen_path = e.files[0].path
                 bot_script_path_textfield.value = chosen_path
@@ -563,7 +657,9 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                     bot_script_abs_path = Path(chosen_path).resolve()
                     if bot_script_abs_path.is_file():
                         app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
-                        print(f"[Settings] 已直接更新 mmc_path: {app_state.mmc_path}")
+                        # 重要：同时更新 bot_base_dir
+                        app_state.bot_base_dir = bot_script_abs_path.parent
+                        print(f"[Settings] 已直接更新 mmc_path 和 bot_base_dir: {app_state.mmc_path}")
                         
                         config_dir = Path(app_state.mmc_path) / "config"
                         if not config_dir.exists():
@@ -572,12 +668,42 @@ def create_settings_view(page: ft.Page, app_state: AppState) -> ft.View:
                                 print(f"[Settings] 已创建 config 目录: {config_dir}")
                             except Exception as e:
                                 print(f"[Settings] 创建 config 目录失败: {e}")
+                        
+                        # ---- 添加：重载配置文件 ---- #
+                        # 1. 重载 bot_config.toml
+                        app_state.bot_config = load_config(config_type="bot", base_dir=app_state.mmc_path)
+                        print(f"[Settings] 重载 bot_config: {'成功' if app_state.bot_config else '失败'}")
+                        
+                        # 2. 重载 lpmm_config.toml
+                        app_state.lpmm_config = load_config(config_type="lpmm", base_dir=app_state.mmc_path)
+                        print(f"[Settings] 重载 lpmm_config: {'成功' if app_state.lpmm_config else '失败'}")
+                        
+                        # 3. 检查 .env 文件
+                        env_path = Path(app_state.mmc_path) / ".env"
+                        env_variables = load_env_data(env_path)
+                        print(f"[Settings] 检查 .env 文件: {'找到 ' + str(len(env_variables)) + ' 个变量' if env_variables else '未找到或为空'}")
+                        
+                        # 4. 重置数据库连接
                         full_database_reset(getattr(app_state, 'db', None))
+                        
+                        # 5. 设置刷新标记
+                        CONFIG_NEEDS_REFRESH = True
+                        print("[Settings] 设置配置需要刷新标记")
                     else:
                         print(f"[Settings] 警告: 所选文件 {bot_script_abs_path} 不存在或无法访问")
                         app_state.mmc_path = str(bot_script_abs_path.parent) # 改为 mmc_path
-                        print(f"[Settings] 已直接更新 mmc_path (基于可能不存在的文件): {app_state.mmc_path}")
+                        # 重要：同时更新 bot_base_dir
+                        app_state.bot_base_dir = bot_script_abs_path.parent
+                        print(f"[Settings] 已直接更新 mmc_path 和 bot_base_dir (基于可能不存在的文件): {app_state.mmc_path}")
+                        
+                        # 即使文件不存在，也尝试重载配置
+                        app_state.bot_config = load_config(config_type="bot", base_dir=app_state.mmc_path)
+                        app_state.lpmm_config = load_config(config_type="lpmm", base_dir=app_state.mmc_path)
+                        
                         full_database_reset(getattr(app_state, 'db', None))
+                        
+                        # 设置刷新标记
+                        CONFIG_NEEDS_REFRESH = True
                 except Exception as e:
                     print(f"[Settings] 直接更新 mmc_path 时出错: {e}")
                 
@@ -834,3 +960,4 @@ def create_settings_view_old(page: ft.Page, app_state: AppState) -> ft.View:
         scroll=ft.ScrollMode.ADAPTIVE,  # Allow scrolling for the whole view
         padding=10,
     )
+

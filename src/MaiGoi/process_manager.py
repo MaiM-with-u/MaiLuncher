@@ -794,4 +794,49 @@ def start_bot_and_show_console(page: ft.Page, app_state: "AppState"):
         update_buttons_state(page, app_state, is_running=False)
 
 
+def start_maicore_in_new_window(page: ft.Page, app_state: "AppState"):
+    """
+    在新命令行窗口中启动MaiCore进程，不在应用内捕获输出。
+    """
+    bot_script = app_state.bot_script_path
+    
+    # 检查Python路径是否有效
+    if not app_state.python_path or not os.path.exists(app_state.python_path):
+        error_msg = "未设置有效的Python解释器路径。请在设置中指定Python解释器路径。"
+        logger.info(f"[启动新窗口] {error_msg}")
+        show_snackbar(page, error_msg, error=True)
+        return False
+    
+    try:
+        logger.info(f"[启动新窗口] 准备启动新窗口中的MaiCore: {bot_script}")
+        
+        if platform.system() == "Windows":
+            # Windows系统使用start命令在新窗口启动
+            # 修复Windows下引号嵌套的问题
+            python_path = app_state.python_path.replace('"', '')
+            bot_script_path = bot_script.replace('"', '')
+            cmd = f'start cmd.exe /k {python_path} {bot_script_path}'
+            logger.info(f"[启动新窗口] Windows命令: {cmd}")
+            subprocess.Popen(cmd, shell=True, cwd=app_state.script_dir)
+        else:
+            # Linux/Mac系统
+            terminal_cmd = "gnome-terminal"  # 默认使用gnome-terminal
+            if platform.system() == "Darwin":  # macOS
+                terminal_cmd = "open -a Terminal"
+            
+            cmd = f'{terminal_cmd} -- {app_state.python_path} "{bot_script}"'
+            subprocess.Popen(cmd, shell=True, cwd=app_state.script_dir)
+            
+        logger.info(f"[启动新窗口] 成功启动MaiCore在新窗口")
+        show_snackbar(page, "已在新窗口启动MaiCore")
+        return True
+        
+    except Exception as e:
+        error_message = str(e) if str(e) else repr(e)
+        logger.info(f"[启动新窗口] 启动失败: {error_message}")
+        logger.info(traceback.format_exc())
+        show_snackbar(page, f"启动MaiCore失败: {error_message}", error=True)
+        return False
+
+
 
